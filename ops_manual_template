@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%%ORG_NAME%% - Operations Manual</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #1f2937; max-width: 900px; margin: 0 auto; padding: 40px; background-color: #f3f4f6; }
+        .container { background: white; padding: 50px; border-radius: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); }
+        h1 { color: #111827; border-bottom: 4px solid #3b82f6; padding-bottom: 15px; margin-bottom: 30px; font-size: 2.5em; }
+        h2 { color: #1e40af; margin-top: 50px; font-size: 1.8em; border-left: 6px solid #3b82f6; padding-left: 15px; }
+        h3 { color: #4b5563; margin-top: 30px; font-size: 1.3em; font-weight: 700; }
+        p, li { margin-bottom: 12px; font-size: 16px; color: #374151; }
+        code { background-color: #f3f4f6; padding: 4px 8px; border-radius: 4px; font-family: 'Consolas', monospace; color: #dc2626; font-weight: bold; font-size: 0.9em; border: 1px solid #e5e7eb; }
+        .key-box { background: #eff6ff; border: 2px solid #3b82f6; padding: 25px; border-radius: 10px; margin: 30px 0; text-align: center; }
+        .key-label { display: block; font-weight: bold; text-transform: uppercase; color: #1e40af; letter-spacing: 1px; font-size: 0.9em; margin-bottom: 10px; }
+        .key-value { font-family: 'Consolas', monospace; font-size: 1.8em; color: #111827; background: white; padding: 10px 20px; border-radius: 6px; border: 1px solid #bfdbfe; display: inline-block; word-break: break-all; }
+        .step { background: #f9fafb; padding: 20px; border-radius: 8px; border: 1px solid #e5e7eb; margin-bottom: 20px; }
+        .step-num { display: inline-block; background: #3b82f6; color: white; width: 30px; height: 30px; text-align: center; line-height: 30px; border-radius: 50%; font-weight: bold; margin-right: 10px; }
+        .warning { background: #fff5f5; border-left: 5px solid #ef4444; padding: 20px; color: #991b1b; border: 1px solid #feb2b2; }
+        .monitor-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 20px; }
+        .legend-item { padding: 15px; border-radius: 8px; font-weight: bold; color: white; text-align: center; }
+        hr { border: 0; height: 1px; background: #e5e7eb; margin: 50px 0; }
+        .prompt-box { background: #1e1e1e; color: #a5b4fc; padding: 20px; border-radius: 8px; font-family: monospace; white-space: pre-wrap; margin: 15px 0; border-left: 5px solid #6366f1; font-size: 0.9em; }
+        
+        /* Table Styles */
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; background: white; font-size: 0.95em; }
+        th { background: #eff6ff; color: #1e40af; text-align: left; padding: 12px; border: 1px solid #dbeafe; }
+        td { padding: 12px; border: 1px solid #e5e7eb; color: #374151; }
+        tr:nth-child(even) { background: #f9fafb; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>Operations Manual</h1>
+        <p><strong>System:</strong> %%ORG_NAME%% Safety AppSuite<br><strong>Version:</strong> v79.20 (Golden Master)</p>
+    </header>
+
+    <div class="warning">
+        <h3>🔐 THE GOLDEN RULE OF KEYS</h3>
+        <p>Your system relies on two secret passwords (Keys) to connect the Worker App to the Google Sheet.</p>
+        <p><strong>You must save these keys somewhere safe right now.</strong></p>
+        <ul>
+            <li>If you update the system later using <strong>DIFFERENT</strong> keys, every phone currently in use will stop connecting, and you will have to reinstall the app on every device.</li>
+            <li>If you update using the <strong>SAME</strong> keys, the phones will update seamlessly in the background.</li>
+        </ul>
+    </div>
+
+    <div class="key-box">
+        <span class="key-label">Master Key (Admin Access)</span>
+        <div class="key-value">%%SECRET_KEY%%</div>
+    </div>
+
+    <div class="key-box" style="border-color:#10b981; background:#ecfdf5;">
+        <span class="key-label" style="color:#065f46;">Worker Key (App Connection)</span>
+        <div class="key-value">%%WORKER_KEY%%</div>
+    </div>
+
+    <h2>Part 1: Initial Deployment</h2>
+
+    <div class="step">
+        <span class="step-num">1</span> <strong>The Database (Google Sheets)</strong>
+        <ol>
+            <li>Go to <a href="https://sheets.new" target="_blank">sheets.new</a>. Name it "OTG Safety DB".</li>
+            <li>Create exactly 4 tabs: <code>Visits</code>, <code>Staff</code>, <code>Templates</code>, <code>Sites</code>.</li>
+            <li>Use the "Copy Headers" buttons in the Factory App to set these up.</li>
+        </ol>
+    </div>
+
+    <div class="step">
+        <span class="step-num">2</span> <strong>The Backend (Apps Script)</strong>
+        <ol>
+            <li>In your Sheet, go to <strong>Extensions > Apps Script</strong>.</li>
+            <li>Paste the <code>Code.gs</code> content from the Factory.</li>
+            <li><strong>Deploy:</strong> Click Deploy (Blue Button) -> New Deployment.</li>
+            <li><strong>Select Type:</strong> Web App.</li>
+            <li><strong>Configuration:</strong> Execute as: <strong>Me</strong>, Who has access: <strong>Anyone</strong>.</li>
+            <li>Copy the <strong>Web App URL</strong>.</li>
+        </ol>
+    </div>
+
+    <div class="step">
+        <span class="step-num">3</span> <strong>Hosting the Apps</strong>
+        <p>Use a static host like Netlify Drop (free).</p>
+        <ol>
+            <li>Drag the <strong>WorkerApp</strong> folder to Netlify.</li>
+            <li><strong>Important:</strong> Click "Sign up to claim site" so the link doesn't expire.</li>
+            <li>Repeat for the <strong>MonitorApp</strong>.</li>
+        </ol>
+    </div>
+
+    <hr>
+
+    <h2>Part 2: Monitor Dashboard</h2>
+    <p>Access your dashboard using the Master Key. Remember to click "Start" to enable audio alerts.</p>
+    <div class="monitor-legend">
+        <div class="legend-item" style="background:#10b981;">🟢 ACTIVE</div>
+        <div class="legend-item" style="background:#f59e0b;">🟠 OVERDUE</div>
+        <div class="legend-item" style="background:#ef4444; animation: pulse 1s infinite;">🔴 EMERGENCY</div>
+        <div class="legend-item" style="background:#d946ef;">🟣 DURESS</div>
+    </div>
+
+    <hr>
+
+    <h2>Part 3: Daily Administration</h2>
+    <h3>Building Smart Forms (Templates Tab)</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Code Syntax</th>
+                <th>Component Rendered</th>
+                <th>Best Used For</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code># Header Name</code></td>
+                <td><strong>Section Header</strong></td>
+                <td>Dividing sections.</td>
+            </tr>
+            <tr>
+                <td><code>% Question</code></td>
+                <td><strong>Text Area</strong></td>
+                <td>Long answers, notes.</td>
+            </tr>
+            <tr>
+                <td><code>$ Label</code></td>
+                <td><strong>Number Input</strong></td>
+                <td>Mileage, Costs (Summed in Reports).</td>
+            </tr>
+            <tr>
+                <td><code>[YESNO] Label</code></td>
+                <td><strong>Yes/No Buttons</strong></td>
+                <td>Compliance checks.</td>
+            </tr>
+            <tr>
+                <td><code>[CHECK] Label</code></td>
+                <td><strong>Checkbox</strong></td>
+                <td>Confirmations.</td>
+            </tr>
+            <tr>
+                <td><code>[PHOTO] Label</code></td>
+                <td><strong>Camera Button</strong></td>
+                <td>Evidence capture.</td>
+            </tr>
+            <tr>
+                <td><code>[GPS] Label</code></td>
+                <td><strong>GPS Button</strong></td>
+                <td>Pinpointing hazards.</td>
+            </tr>
+            <tr>
+                <td><code>[DATE] Label</code></td>
+                <td><strong>Date Picker</strong></td>
+                <td>Expiry dates.</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <hr>
+
+    <h2>Part 4: Updates & Modifications</h2>
+    <div class="warning">
+        <h3>⚠️ THE "NEW VERSION" TRAP</h3>
+        <p>When you edit code in Google Apps Script, clicking "Save" <strong>DOES NOT</strong> update the live system.</p>
+        <p>For any change to take effect, you must:</p>
+        <ol>
+            <li>Click <strong>Deploy</strong> (Blue Button).</li>
+            <li>Select <strong>Manage Deployments</strong>.</li>
+            <li>Click the Pencil Icon (Edit).</li>
+            <li>Change "Version" to <strong>"New version"</strong>.</li>
+            <li>Click <strong>Deploy</strong>.</li>
+        </ol>
+    </div>
+
+    <h3>Scenario A: Performing a "Soft Update" (Code Only)</h3>
+    <p>Use this method to update the Worker App features without forcing everyone to reinstall.</p>
+    <ol>
+        <li>Open the Factory App (<code>index.html</code>).</li>
+        <li><strong>CRITICAL:</strong> Paste your saved <strong>Master Key</strong> and <strong>Worker Key</strong> into the configuration boxes.</li>
+        <li>Click <strong>Generate Backend Code</strong>.</li>
+        <li>Copy the new code and paste it into your Google Apps Script editor.</li>
+        <li>Perform the "New Version" deployment steps above.</li>
+        <li>Download the new AppSuite ZIP.</li>
+        <li>Upload the new <code>WorkerApp</code> folder to Netlify (drag and drop it onto your existing site dashboard to update it).</li>
+        <li>Tell staff to <strong>Close and Reopen</strong> their app twice to pull the update.</li>
+    </ol>
+
+    <h3>Scenario B: Modifying the Backend Logic</h3>
+    <p>You can edit <code>Code.gs</code> directly to change how the system behaves (e.g., AI prompts, Email formatting).</p>
+    <ol>
+        <li>Open your Google Sheet > Extensions > Apps Script.</li>
+        <li>Find the function you want to change (e.g., <code>smartScribe</code> for AI, <code>sendAlertEmail</code> for notifications).</li>
+        <li>Make your changes.</li>
+        <li><strong>Test:</strong> Click the "Run" button to test specific functions (like <code>checkOverdueWorkers</code>).</li>
+        <li><strong>Deploy:</strong> Follow the "New Version" deployment steps above.</li>
+    </ol>
+
+    <hr>
+
+    <h2>Part 5: Reporting & AI</h2>
+    <p>Access reports via the <strong>"🛡️ OTG Admin"</strong> menu in your Google Sheet.</p>
+    
+    <h3>Expanding with AI (Code Snippets)</h3>
+    <p>You can paste these snippets into <code>Code.gs</code> to enhance the AI functionality.</p>
+
+    <h4>Idea 1: The "Mood Ring" (Sentiment Analysis)</h4>
+    <div class="prompt-box">// Find 'smartScribe' and replace the prompt:
+const prompt = `Read these notes: "${safeNotes}".
+1. Correct grammar.
+2. If the worker seems stressed/angry, add "[HIGH STRESS]" at the start.
+3. Return corrected text.`;</div>
+
+    <h4>Idea 2: The "Hazard Hunter" (Categorization)</h4>
+    <div class="prompt-box">// Update 'smartScribe' prompt:
+const prompt = `Read these notes: "${safeNotes}".
+Classify visit as: [Client, Maintenance, Training, Admin].
+Format: "Category: [Category] - [Notes]"`;</div>
+
+    <hr>
+
+    <h2>Part 6: Troubleshooting</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Issue</th>
+                <th>Likely Cause</th>
+                <th>Fix</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>"Access Denied"</strong></td>
+                <td>Key Mismatch</td>
+                <td>You generated new keys in the Factory but the phone has old keys. Reinstall app.</td>
+            </tr>
+            <tr>
+                <td><strong>"Failed to Fetch"</strong></td>
+                <td>URL Mismatch</td>
+                <td>You deployed a new script but didn't update the App URL in the Factory.</td>
+            </tr>
+            <tr>
+                <td><strong>Changes ignored</strong></td>
+                <td>Version Trap</td>
+                <td>You clicked "Save" in Apps Script but didn't deploy a "New version".</td>
+            </tr>
+            <tr>
+                <td><strong>Monitor Silence</strong></td>
+                <td>Browser Block</td>
+                <td>You must click the page once to allow audio to play.</td>
+            </tr>
+        </tbody>
+    </table>
+
+</div>
+
+</body>
+</html>
