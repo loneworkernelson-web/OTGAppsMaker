@@ -1,0 +1,4035 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>OTG Safety</title>
+<meta name="apple-mobile-web-app-title" content="OTG Safety">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" id="metaThemeColor" content="#1e3a8a">
+<link rel="manifest" href="manifest.json" id="manifestLink">
+<link rel="icon" href="./icon.png" id="faviconLink">
+
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+
+  <script type="module">
+const DURATION_MAP = [
+  10,
+  15,
+  20,
+  30,
+  45,
+  // 0-4:  Quick visits (10-45 min)
+  60,
+  75,
+  90,
+  105,
+  120,
+  // 5-9:  Short visits (1-2 hours)
+  135,
+  150,
+  165,
+  180,
+  // 10-13: Medium visits (2-3 hours)
+  195,
+  210,
+  225,
+  240,
+  // 14-17: Long visits (3-4 hours)
+  255,
+  270,
+  285,
+  300,
+  // 18-21: Extended visits (4-5 hours)
+  315,
+  330,
+  345,
+  360,
+  // 22-25: Very long visits (5-6 hours)
+  390,
+  420,
+  450,
+  480
+  // 26-30: Maximum visits (6-8 hours)
+];
+const RISK_WELFARE_MAP = {
+  Low: 60,
+  // Low risk    — hourly check-in is sufficient
+  Medium: 30,
+  // Medium risk — check in every 30 minutes
+  High: 15,
+  // High risk   — check in every 15 minutes
+  Critical: 10
+  // Critical    — check in every 10 minutes
+};
+const CONFIG = {
+  url: "",
+  org: "",
+  appName: "",
+  key: "",
+  mileageEnabled: false,
+  vehEnabled: false,
+  checkinEnabled: true,
+  vehInterval: 90,
+  escalationMinutes: 60,
+  checkinInterval: 30,
+  countryPrefix: "+64",
+  vehicleTerm: "WOF",
+  voiceLocale: "en-NZ",
+  reqTravelReport: true,
+  ntfyServer: "https://ntfy.sh",
+  buildVersion: "0.0.0"
+};
+function applyTheme(theme) {
+  if (!theme) return;
+  const root = document.documentElement;
+  if (theme.primary) root.style.setProperty("--primary", theme.primary);
+  if (theme.accent) root.style.setProperty("--accent", theme.accent);
+  if (theme.surface) root.style.setProperty("--surface", theme.surface);
+  if (theme.accentGlow) root.style.setProperty("--accent-glow", theme.accentGlow);
+  if (theme.textOnPrimary) root.style.setProperty("--text-on-primary", theme.textOnPrimary);
+  if (theme.textOnAccent) root.style.setProperty("--text-on-accent", theme.textOnAccent);
+  const meta = document.getElementById("metaThemeColor");
+  if (meta && theme.primary) meta.setAttribute("content", theme.primary);
+}
+function applyConfig(cfg) {
+  CONFIG.url = cfg.backendUrl || "";
+  CONFIG.org = cfg.orgName || "";
+  CONFIG.appName = cfg.appName || cfg.orgName || "";
+  CONFIG.key = cfg.workerKey || "";
+  CONFIG.ntfyServer = cfg.ntfyServer || "https://ntfy.sh";
+  CONFIG.buildVersion = cfg.version || "0.0.0";
+  if (cfg.features) {
+    CONFIG.mileageEnabled = !!cfg.features.mileageEnabled;
+    CONFIG.vehEnabled = !!cfg.features.vehicleEnabled;
+    CONFIG.checkinEnabled = cfg.features.checkinEnabled !== false;
+    CONFIG.reqTravelReport = !!cfg.features.requireTravelReport;
+  }
+  if (cfg.timing) {
+    CONFIG.checkinInterval = cfg.timing.checkinInterval || 30;
+    CONFIG.escalationMinutes = cfg.timing.escalationMinutes || 60;
+    CONFIG.vehInterval = cfg.timing.vehicleInterval || 90;
+  }
+  if (cfg.locale) {
+    CONFIG.countryPrefix = cfg.locale.countryPrefix || "+64";
+    CONFIG.vehicleTerm = cfg.locale.vehicleTerm || "WOF";
+    CONFIG.voiceLocale = cfg.locale.voiceLocale || "en-NZ";
+  }
+  if (cfg.theme) applyTheme(cfg.theme);
+  const logoUrl = cfg.logoUrl || "./icon.png";
+  CONFIG.logoUrl = logoUrl;
+  const headerLogo = document.getElementById("headerLogo");
+  const faviconLink = document.getElementById("faviconLink");
+  if (headerLogo) headerLogo.src = logoUrl;
+  if (faviconLink) faviconLink.href = logoUrl;
+  const orgNameEls = document.querySelectorAll(".orgNameDisplay");
+  orgNameEls.forEach((el) => {
+    el.textContent = CONFIG.org;
+  });
+  const headerOrg = document.getElementById("headerOrgName");
+  if (headerOrg) headerOrg.textContent = CONFIG.org;
+  document.title = `${CONFIG.appName || CONFIG.org} Safety`;
+  const verEl = document.getElementById("appVersion");
+  if (verEl) verEl.textContent = CONFIG.buildVersion;
+  const storedVersion = localStorage.getItem("otg_config_version");
+  if (storedVersion && storedVersion !== CONFIG.buildVersion) {
+    console.log(`[OTG] Config version changed: ${storedVersion} → ${CONFIG.buildVersion}. Flagging for SW update.`);
+    if ("serviceWorker" in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.getRegistration().then((reg) => {
+        if (reg) reg.update();
+      });
+    }
+  }
+  localStorage.setItem("otg_config_version", CONFIG.buildVersion);
+  _injectDynamicManifest(cfg);
+}
+function _injectDynamicManifest(cfg) {
+  try {
+    const orgName = cfg.orgName || "OTG";
+    const appName = cfg.appName || orgName;
+    const primary = cfg.theme && cfg.theme.primary ? cfg.theme.primary : "#1e3a8a";
+    const logoSrc = cfg.logoUrl || "./icon.png";
+    const manifest = {
+      name: `${orgName} Safety`,
+      short_name: appName,
+      description: "Lone worker safety monitoring app",
+      start_url: "./index.html",
+      display: "standalone",
+      background_color: primary,
+      theme_color: primary,
+      orientation: "portrait",
+      icons: [
+        { src: logoSrc, sizes: "192x192", type: "image/png" },
+        { src: logoSrc, sizes: "512x512", type: "image/png", purpose: "any maskable" }
+      ]
+    };
+    const json = JSON.stringify(manifest, null, 2);
+    const blob = new Blob([json], { type: "application/manifest+json" });
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.getElementById("manifestLink");
+    if (link) link.href = blobUrl;
+    const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    if (appleTitle) appleTitle.setAttribute("content", appName);
+    if ("caches" in window) {
+      caches.open("otg-manifest").then((cache) => {
+        cache.put("./manifest.json", new Response(json, {
+          headers: { "Content-Type": "application/manifest+json" }
+        }));
+      }).catch(() => {
+      });
+    }
+    console.log(`[OTG] Dynamic manifest injected: "${manifest.name}" / "${manifest.short_name}"`);
+  } catch (e) {
+    console.warn("[OTG] _injectDynamicManifest failed (non-fatal):", e);
+  }
+}
+async function loadConfig() {
+  const bootStatus = document.getElementById("bootStatus");
+  const bootError = document.getElementById("bootError");
+  const bootSpinner = document.getElementById("bootSpinner");
+  const bootErrMsg = document.getElementById("bootErrorMsg");
+  try {
+    if (bootStatus) bootStatus.textContent = "Fetching configuration…";
+    const response = await fetch("./config.json", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Server returned ${response.status} for config.json`);
+    }
+    const cfg = await response.json();
+    if (cfg._error === "config_unavailable_offline") {
+      throw new Error("App is offline and config.json has not been cached yet. Please connect to the internet for the first load, then the app will work offline.");
+    }
+    if (!cfg.backendUrl && !cfg.workerKey) {
+      throw new Error("config.json appears to be the example template — please populate your organisation values and re-deploy.");
+    }
+    applyConfig(cfg);
+    if (bootStatus) bootStatus.textContent = "Ready.";
+    await new Promise((r) => setTimeout(r, 150));
+    const bootScreen = document.getElementById("bootScreen");
+    if (bootScreen) bootScreen.style.display = "none";
+    _initApp();
+  } catch (err) {
+    console.error("[OTG] Config load failed:", err);
+    if (bootSpinner) bootSpinner.style.display = "none";
+    if (bootErrMsg) bootErrMsg.textContent = err.message || String(err);
+    if (bootError) bootError.style.display = "block";
+    if (bootStatus) bootStatus.style.display = "none";
+  }
+}
+const STORAGE_KEY = "loneWorkerState";
+function saveState(stateObj) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(stateObj));
+  } catch (e) {
+    console.error("Save state failed:", e);
+  }
+}
+const GPS_MIN_INTERVAL_MS = 2 * 60 * 1e3;
+const GPS_DEFAULT_INTERVAL_MS = 5 * 60 * 1e3;
+const GPS_MAX_INTERVAL_MS = 10 * 60 * 1e3;
+let lastGPS = null;
+let lastGPSCoords = null;
+let gpsCurrentIntervalMs = 0;
+let gpsTrail = [];
+let gpsWatchId = null;
+function getLastGPS() {
+  return lastGPS;
+}
+function setLastGPS(v) {
+  lastGPS = v;
+}
+function clearGpsTrail() {
+  gpsTrail = [];
+}
+function appendToGpsTrail(lat, lng) {
+  const last = gpsTrail[gpsTrail.length - 1];
+  if (!last || _gpsHaversineMetres(last.lat, last.lng, lat, lng) > 50) {
+    gpsTrail.push({ lat, lng });
+  }
+}
+function isGPSMonitoringActive() {
+  return gpsWatchId !== null;
+}
+function _gpsHaversineMetres(lat1, lng1, lat2, lng2) {
+  const R = 6371e3;
+  const toRad = (d) => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+function updateGPSBars(pos) {
+  var _a, _b, _c, _d, _e, _f;
+  const accuracy = pos.coords.accuracy;
+  const bars = document.querySelectorAll(".gps-bar");
+  const label = document.getElementById("gpsLabel");
+  bars.forEach((b) => b.classList.remove("active-red", "active-amber", "active-green", "active-blue"));
+  if (accuracy > 200) {
+    (_a = bars[0]) == null ? void 0 : _a.classList.add("active-red");
+    if (label) label.textContent = "IP";
+  } else if (accuracy > 50) {
+    (_b = bars[0]) == null ? void 0 : _b.classList.add("active-blue");
+    (_c = bars[1]) == null ? void 0 : _c.classList.add("active-blue");
+    if (label) label.textContent = "WiFi";
+  } else if (accuracy > 20) {
+    (_d = bars[0]) == null ? void 0 : _d.classList.add("active-amber");
+    (_e = bars[1]) == null ? void 0 : _e.classList.add("active-amber");
+    (_f = bars[2]) == null ? void 0 : _f.classList.add("active-amber");
+    if (label) label.textContent = "GPS";
+  } else {
+    bars.forEach((b) => b.classList.add("active-green"));
+    if (label) label.textContent = "GPS";
+  }
+  const badge = document.getElementById("gpsAccuracyBadge");
+  const badgeVal = document.getElementById("gpsAccuracyValue");
+  if (badge && badgeVal) {
+    if (accuracy > 100) {
+      badgeVal.textContent = Math.round(accuracy);
+      badge.classList.remove("hidden");
+    } else {
+      badge.classList.add("hidden");
+    }
+  }
+}
+function _takeSingleGPSFix() {
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      lastGPS = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+      updateGPSBars(pos);
+      if (lastGPSCoords !== null) {
+        const dist = _gpsHaversineMetres(lastGPSCoords.lat, lastGPSCoords.lng, lat, lng);
+        if (dist < 200) {
+          gpsCurrentIntervalMs = Math.min(gpsCurrentIntervalMs * 2, GPS_MAX_INTERVAL_MS);
+        } else if (dist > 500) {
+          gpsCurrentIntervalMs = Math.max(gpsCurrentIntervalMs / 2, GPS_MIN_INTERVAL_MS);
+        }
+      }
+      lastGPSCoords = { lat, lng };
+      if (gpsWatchId !== null) {
+        gpsWatchId = setTimeout(_takeSingleGPSFix, gpsCurrentIntervalMs);
+      }
+    },
+    (err) => {
+      console.warn("GPS fix failed:", err.message);
+      document.querySelectorAll(".gps-bar").forEach((b) => {
+        b.classList.remove("active-red", "active-amber", "active-green");
+        b.style.backgroundColor = "#374151";
+      });
+      if (gpsWatchId !== null) {
+        gpsWatchId = setTimeout(_takeSingleGPSFix, gpsCurrentIntervalMs);
+      }
+    },
+    {
+      enableHighAccuracy: true,
+      timeout: 15e3,
+      maximumAge: 6e4
+      // Accept a cached fix up to 1 min old to avoid
+      // waking the GPS chip unnecessarily
+    }
+  );
+}
+function startGPSMonitoring() {
+  if (gpsWatchId !== null) {
+    clearTimeout(gpsWatchId);
+    gpsWatchId = null;
+  }
+  if (!navigator.geolocation) return;
+  lastGPSCoords = null;
+  gpsCurrentIntervalMs = GPS_DEFAULT_INTERVAL_MS;
+  gpsWatchId = -1;
+  _takeSingleGPSFix();
+}
+function stopGPSMonitoring() {
+  if (gpsWatchId !== null) {
+    clearTimeout(gpsWatchId);
+    gpsWatchId = null;
+  }
+}
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
+function showModal(id) {
+  const modal = document.getElementById(id + "Modal");
+  if (modal) {
+    modal.classList.remove("hidden");
+  }
+}
+function closeModal(id) {
+  const modal = document.getElementById(id + "Modal");
+  if (modal) {
+    modal.classList.add("hidden");
+    modal.style.display = "";
+  }
+}
+function showToast(text) {
+  const toastText = document.getElementById("toastText");
+  const toastMsg = document.getElementById("toastMsg");
+  if (toastText && toastMsg) {
+    toastText.innerText = text;
+    toastMsg.classList.add("show");
+    setTimeout(() => toastMsg.classList.remove("show"), 3e3);
+  }
+}
+function announce(text) {
+  if ("speechSynthesis" in window) {
+    try {
+      const utter = new SpeechSynthesisUtterance(text);
+      if (speechSynthesis.getVoices().length === 0) {
+        speechSynthesis.addEventListener("voiceschanged", () => {
+          speechSynthesis.speak(utter);
+        }, { once: true });
+      } else {
+        speechSynthesis.speak(utter);
+      }
+    } catch (e) {
+      console.warn("Speech synthesis failed:", e);
+      showToast(text);
+    }
+  } else {
+    showToast(text);
+  }
+}
+let isSosLocked = false;
+function getIsSosLocked() {
+  return isSosLocked;
+}
+function _lockOrientation() {
+  try {
+    if (screen.orientation && screen.orientation.lock) {
+      screen.orientation.lock("portrait").catch(() => {
+      });
+    }
+  } catch (e) {
+  }
+}
+function _unlockOrientation() {
+  try {
+    if (screen.orientation && screen.orientation.unlock) {
+      screen.orientation.unlock();
+    }
+  } catch (e) {
+  }
+}
+function exitLockedScreen() {
+  _unlockOrientation();
+}
+async function getBatteryPercent() {
+  try {
+    if ("getBattery" in navigator) {
+      const battery = await navigator.getBattery();
+      return Math.floor(battery.level * 100) + "%";
+    }
+  } catch (e) {
+    console.info("Battery API not available:", e);
+  }
+  return "Unknown";
+}
+async function logSafety(type, message) {
+  console.log(`[${type}] ${message}`);
+  const data = {
+    "Alarm Status": type,
+    "Notes": message,
+    "Last Known GPS": getLastGPS() || "0,0",
+    "GPS Timestamp": (/* @__PURE__ */ new Date()).toLocaleString(),
+    "Battery Level": await getBatteryPercent(),
+    "App Version": "v81.36"
+  };
+  const fullPayload = buildPayload(data);
+  fullPayload["action"] = "logVisit";
+  await outboxEnqueue(fullPayload);
+}
+let travellingInterval = null;
+function clearTravellingInterval() {
+  if (travellingInterval) {
+    clearInterval(travellingInterval);
+    travellingInterval = null;
+  }
+}
+function startTravellingPulse() {
+  if (travellingInterval) clearInterval(travellingInterval);
+  travellingInterval = setInterval(() => {
+  }, 12e4);
+}
+function setupLongPress(target, duration, callback) {
+  const btn = typeof target === "string" ? document.getElementById(target) : target;
+  if (!btn) return;
+  let timer;
+  const start = (e) => {
+    if ((target === "btnPanic" || btn.id === "btnPanic") && getIsSosLocked()) ;
+    if (e.type === "mousedown") e.preventDefault();
+    btn.classList.add("holding");
+    timer = setTimeout(() => {
+      btn.classList.remove("holding");
+      callback();
+    }, duration);
+  };
+  const stop = () => {
+    clearTimeout(timer);
+    btn.classList.remove("holding");
+  };
+  btn.addEventListener("touchstart", start, { passive: true });
+  btn.addEventListener("mousedown", start);
+  ["touchend", "touchcancel", "mouseup", "mouseleave"].forEach((ev) => {
+    btn.addEventListener(ev, stop);
+  });
+}
+let dimTimer;
+function resetInactivityTimer() {
+  const saverEl = document.getElementById("batterySaver");
+  if (saverEl && !saverEl.classList.contains("hidden")) return;
+  clearTimeout(dimTimer);
+}
+function updateDimmedDisplay() {
+  return;
+}
+setInterval(updateDimmedDisplay, 1e3);
+let synth;
+let audioReady = false;
+async function initAudio() {
+  if (!audioReady && typeof Tone !== "undefined") {
+    try {
+      const originalLog = console.log;
+      console.log = function() {
+      };
+      await Tone.start();
+      synth = new Tone.Synth().toDestination();
+      audioReady = true;
+      console.log = originalLog;
+      console.log("✅ Audio initialized successfully");
+    } catch (e) {
+      console.warn("Audio initialization failed:", e);
+      audioReady = false;
+    }
+  }
+}
+document.addEventListener("click", initAudio, { once: true });
+document.addEventListener("touchstart", initAudio, { once: true });
+async function playPanicTone() {
+  await initAudio();
+  if (audioReady && synth) {
+    try {
+      synth.triggerAttackRelease("C4", "8n");
+    } catch (e) {
+    }
+  }
+}
+function showAlarmButtons() {
+  const btnDirect = document.getElementById("btnDirectAlert");
+  const btnCall = document.getElementById("btnCallICE");
+  const callLabel = document.getElementById("btnCallICELabel");
+  if (btnDirect) btnDirect.classList.remove("hidden");
+  if (btnCall) {
+    const w = {};
+    const name = w.emgName || w.iceName || "";
+    const phone = w.emgPhone || w.icePhone || "";
+    if (phone) {
+      if (callLabel) callLabel.textContent = name ? `${name} — ${phone}` : phone;
+      btnCall.classList.remove("hidden");
+    }
+  }
+}
+const TICK_NORMAL = 1e4;
+let tickIntervalId = null;
+function startTick() {
+  if (tickIntervalId) clearInterval(tickIntervalId);
+  tickIntervalId = setInterval(tick, TICK_NORMAL);
+}
+function stopTick() {
+  if (tickIntervalId) {
+    clearInterval(tickIntervalId);
+    tickIntervalId = null;
+  }
+}
+function tick() {
+  return;
+}
+let welfareIntervalId = null;
+function startWelfareChecks() {
+  if (!CONFIG.checkinEnabled) return;
+  stopWelfareChecks();
+  const intervalMins = CONFIG.checkinInterval || 60;
+  const intervalMs = intervalMins * 60 * 1e3;
+  welfareIntervalId = setInterval(() => {
+    return;
+  }, intervalMs);
+}
+function stopWelfareChecks() {
+  if (welfareIntervalId) {
+    clearInterval(welfareIntervalId);
+    welfareIntervalId = null;
+  }
+  const modal = document.getElementById("welfareCheckModal");
+  if (modal) modal.classList.add("hidden");
+}
+function confirmWelfare() {
+  const modal = document.getElementById("welfareCheckModal");
+  if (modal) modal.classList.add("hidden");
+  logSafety("WELFARE_OK", "Worker confirmed welfare check-in.");
+  if (navigator.vibrate) navigator.vibrate(50);
+}
+let _stateGetter = () => null;
+function getState$1() {
+  return _stateGetter();
+}
+function saveSettings() {
+  return;
+}
+function updateMySitesSummary() {
+  const el = document.getElementById("mySitesSummary");
+  if (!el) return;
+  const count = [].filter((l) => l && l.id && l.id.startsWith("loc_")).length;
+  el.textContent = count === 0 ? "No personal sites saved on this device." : `${count} personal site${count !== 1 ? "s" : ""} saved on this device.`;
+}
+function exportMySites() {
+  var _a;
+  const state2 = getState$1();
+  const manual = [].filter((l) => l && l.id && l.id.startsWith("loc_"));
+  if (manual.length === 0) {
+    showToast("⚠️ No personal sites to export");
+    return;
+  }
+  const exportData = {
+    v: 1,
+    worker: ((_a = state2.worker) == null ? void 0 : _a.name) || "",
+    exported: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
+    sites: manual.map(({ id, ...rest }) => rest)
+  };
+  const payload = btoa(JSON.stringify(exportData));
+  const msg = `OTG Sites Export — ${manual.length} site${manual.length !== 1 ? "s" : ""}
+
+${payload}`;
+  if (navigator.share) {
+    navigator.share({ title: "My Safety App Sites", text: msg }).catch((err) => {
+      if (err.name !== "AbortError") showToast("⚠️ Share failed");
+    });
+  } else if (navigator.clipboard) {
+    navigator.clipboard.writeText(payload).then(() => showToast(`✅ ${manual.length} site${manual.length !== 1 ? "s" : ""} copied to clipboard`)).catch(() => showToast("⚠️ Copy failed — try long-pressing the code"));
+  } else {
+    showToast("⚠️ Sharing not supported on this browser");
+  }
+}
+function importMySites() {
+  const state2 = getState$1();
+  const textarea = document.getElementById("importSitesPayload");
+  const errorEl = document.getElementById("importSitesError");
+  const raw = ((textarea == null ? void 0 : textarea.value) || "").trim();
+  if (!raw) {
+    if (errorEl) {
+      errorEl.textContent = "Please paste your export code first.";
+      errorEl.classList.remove("hidden");
+    }
+    return;
+  }
+  let exportData;
+  try {
+    exportData = JSON.parse(atob(raw));
+  } catch (e) {
+    if (errorEl) {
+      errorEl.textContent = "Invalid code — make sure you pasted the full export text.";
+      errorEl.classList.remove("hidden");
+    }
+    return;
+  }
+  if (!exportData || exportData.v !== 1 || !Array.isArray(exportData.sites)) {
+    if (errorEl) {
+      errorEl.textContent = "Unrecognised format. Export again from your old device.";
+      errorEl.classList.remove("hidden");
+    }
+    return;
+  }
+  const existingNames = new Set(
+    (state2.locations || []).map((l) => (l.name || "").toLowerCase().trim())
+  );
+  let added = 0, skipped = 0;
+  exportData.sites.forEach((site) => {
+    const nameLower = (site.name || "").toLowerCase().trim();
+    if (!nameLower) return;
+    if (existingNames.has(nameLower)) {
+      skipped++;
+      return;
+    }
+    state2.locations.push({ ...site, id: "loc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6) });
+    existingNames.add(nameLower);
+    added++;
+  });
+  saveState(state2);
+  renderLocations();
+  closeModal("importSites");
+  if (textarea) textarea.value = "";
+  if (errorEl) errorEl.classList.add("hidden");
+  const msg = skipped > 0 ? `✅ ${added} imported, ${skipped} already existed` : `✅ ${added} site${added !== 1 ? "s" : ""} imported`;
+  showToast(msg);
+}
+function clearFormsCache() {
+  return;
+}
+function clearData() {
+  if (confirm("⚠️ WARNING: This will erase ALL app data including settings, locations, and queued uploads.\n\nAre you absolutely sure?")) {
+    if (confirm("⚠️ FINAL WARNING: There is NO UNDO. All data will be permanently deleted.\n\nContinue?")) {
+      localStorage.clear();
+      showToast("🗑️ All data cleared - Reloading...");
+      setTimeout(() => location.reload(), 1e3);
+    }
+  }
+}
+async function sendTestAlert() {
+  const resultEl = document.getElementById("testAlertResult");
+  const w = {};
+  const contacts = [
+    w.emgEmail || w.iceEmail,
+    w.escEmail || w.ice2Email
+  ].filter(Boolean);
+  if (contacts.length === 0) {
+    if (resultEl) {
+      resultEl.textContent = "⚠️ No email contacts configured. Add emergency contacts in Settings first.";
+      resultEl.className = "text-xs font-bold rounded-lg px-3 py-2 mb-3 bg-amber-900/40 text-amber-400";
+      resultEl.classList.remove("hidden");
+    }
+    return;
+  }
+  if (resultEl) {
+    resultEl.textContent = "⏳ Sending test alert…";
+    resultEl.className = "text-xs font-bold rounded-lg px-3 py-2 mb-3 bg-gray-700 text-gray-300";
+    resultEl.classList.remove("hidden");
+  }
+  try {
+    await outboxEnqueue(buildPayload({
+      "Alarm Status": "TEST_ALERT",
+      "Notes": "Manual test alert sent from Settings page to verify contact configuration.",
+      "Last Known GPS": getLastGPS() || "0,0",
+      "Location Name": "Test (no active visit)",
+      "Location Address": "Sent from Settings page"
+    }));
+    if (resultEl) {
+      resultEl.textContent = `✅ Test alert sent to: ${contacts.join(", ")} — ask them to check their inbox (and spam folder).`;
+      resultEl.className = "text-xs font-bold rounded-lg px-3 py-2 mb-3 bg-green-900/40 text-green-400";
+    }
+  } catch (e) {
+    if (resultEl) {
+      resultEl.textContent = "⚠️ Failed to queue test alert. Check your connection and try again.";
+      resultEl.className = "text-xs font-bold rounded-lg px-3 py-2 mb-3 bg-red-900/40 text-red-400";
+    }
+  }
+}
+function updateSystemInfo() {
+  const backendUrl = document.getElementById("setBackendUrl");
+  if (backendUrl) backendUrl.value = CONFIG.url || "Not configured";
+  const backendVersion = document.getElementById("backendVersion");
+  const syncStatus = document.getElementById("syncStatus");
+  if (!CONFIG.key || CONFIG.key.length < 3) {
+    if (backendVersion) {
+      backendVersion.textContent = "Pending factory injection";
+      backendVersion.className = "text-sm font-mono text-yellow-400";
+    }
+    if (syncStatus) {
+      syncStatus.textContent = "Template mode (needs deployment)";
+      syncStatus.className = "text-sm font-mono text-yellow-400";
+    }
+    return;
+  }
+  if (CONFIG.url && navigator.onLine) {
+    fetch(`${CONFIG.url}?action=ping&key=${CONFIG.key}`, {
+      method: "GET",
+      headers: { "Accept": "application/json" }
+    }).then((r) => r.json()).then((data) => {
+      if (backendVersion) {
+        backendVersion.textContent = data.version || "v1.0";
+        backendVersion.className = "text-sm font-mono text-green-400";
+      }
+      if (syncStatus) {
+        syncStatus.textContent = "Connected ✓";
+        syncStatus.className = "text-sm font-mono text-green-400";
+      }
+    }).catch(() => {
+      if (backendVersion) {
+        backendVersion.textContent = "Unknown";
+        backendVersion.className = "text-sm font-mono text-yellow-400";
+      }
+      if (syncStatus) {
+        syncStatus.textContent = "Offline";
+        syncStatus.className = "text-sm font-mono text-red-400";
+      }
+    });
+  } else {
+    if (syncStatus) {
+      syncStatus.textContent = "No network";
+      syncStatus.className = "text-sm font-mono text-gray-400";
+    }
+  }
+  updateOutboxStatus();
+}
+async function updateOutboxStatus() {
+  const pendingEl = document.getElementById("outboxPending");
+  const sentEl = document.getElementById("outboxSent");
+  const lastSentEl = document.getElementById("outboxLastSent");
+  const historyEl = document.getElementById("outboxHistory");
+  if (!pendingEl || !sentEl || !lastSentEl || !historyEl) return;
+  let db;
+  try {
+    db = await getOutboxDb();
+  } catch (e) {
+    historyEl.innerHTML = '<div class="text-red-400 text-center py-2">IndexedDB unavailable</div>';
+    return;
+  }
+  const allRecords = await new Promise((resolve) => {
+    const tx = db.transaction("events", "readonly");
+    const req = tx.objectStore("events").getAll();
+    req.onsuccess = (e) => resolve(e.target.result || []);
+    req.onerror = () => resolve([]);
+  });
+  const pending = allRecords.filter((r) => r.status === "pending");
+  const sent = allRecords.filter((r) => r.status === "sent");
+  pendingEl.textContent = pending.length;
+  pendingEl.className = `text-xl font-black ${pending.length > 0 ? "text-yellow-400" : "text-green-400"}`;
+  sentEl.textContent = sent.length;
+  const lastSent = sent.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt))[0];
+  if (lastSent == null ? void 0 : lastSent.sentAt) {
+    const d = new Date(lastSent.sentAt);
+    lastSentEl.textContent = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " " + d.toLocaleDateString([], { day: "numeric", month: "short" });
+  } else {
+    lastSentEl.textContent = "Never";
+  }
+  const recent = [...allRecords].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 15);
+  if (recent.length === 0) {
+    historyEl.innerHTML = '<div class="text-gray-600 text-center py-2">No events recorded yet</div>';
+    return;
+  }
+  historyEl.innerHTML = recent.map((r) => {
+    var _a;
+    const alarmStatus = ((_a = r.payload) == null ? void 0 : _a["Alarm Status"]) || "LOG";
+    const ts = r.createdAt ? new Date(r.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "?";
+    const dot = r.status === "sent" ? "🟢" : "🟡";
+    const attempts = r.attempts > 0 ? ` ×${r.attempts}` : "";
+    return `<div class="flex justify-between items-center py-0.5">
+                    <span>${dot} <span class="text-white">${alarmStatus}</span>${attempts}</span>
+                    <span class="text-gray-500">${ts}</span>
+                </div>`;
+  }).join("");
+}
+function toggleAdvancedGPS(enabled) {
+  const state2 = getState$1();
+  if (enabled) {
+    startGPSMonitoring();
+    state2.settings.isAdvanced = true;
+    showToast("📍 Advanced GPS enabled");
+  } else {
+    stopGPSMonitoring();
+    state2.settings.isAdvanced = false;
+    const gpsIndicator = document.getElementById("gpsIndicator");
+    if (gpsIndicator) gpsIndicator.classList.add("hidden");
+    showToast("🔋 GPS throttled");
+  }
+  saveState(state2);
+}
+function navigate(page) {
+  document.querySelectorAll(".page").forEach((p) => p.classList.remove("active"));
+  const targetPage = document.getElementById(page + "Page");
+  if (targetPage) {
+    targetPage.classList.add("active");
+    if (page === "settings") {
+      updateSystemInfo();
+      updateMySitesSummary();
+    }
+  } else {
+    console.error(`Page not found: ${page}Page`);
+  }
+}
+let _getState$6 = () => ({});
+function checkVehicleStatus() {
+  const state2 = _getState$6();
+  if (!state2 || !state2.meta) return;
+  const nagBar = document.getElementById("vehNagBar");
+  if (!nagBar) return;
+  let showNag = false;
+  if (state2.meta.lastVehCheck) {
+    const lastCheck = new Date(state2.meta.lastVehCheck);
+    const daysSince = (Date.now() - lastCheck.getTime()) / (1e3 * 60 * 60 * 24);
+    if (daysSince > 120) {
+      showNag = true;
+      nagBar.innerText = "⚠️ Vehicle Check Overdue - Tap to Complete";
+    }
+  } else {
+    showNag = true;
+    nagBar.innerText = "⚠️ Vehicle Check Required";
+  }
+  if (state2.meta.wofExpiry) {
+    const wofDate = new Date(state2.meta.wofExpiry);
+    const daysUntil = (wofDate.getTime() - Date.now()) / (1e3 * 60 * 60 * 24);
+    if (daysUntil < 0) {
+      showNag = true;
+      nagBar.innerText = "⛔ WOF EXPIRED - Vehicle Use Prohibited";
+      nagBar.classList.add("animate-pulse");
+    } else if (daysUntil < 14) {
+      showNag = true;
+      nagBar.innerText = `⚠️ Vehicle Check: WOF Due in ${Math.ceil(daysUntil)} Days`;
+    }
+  }
+  if (showNag) {
+    nagBar.classList.remove("hidden");
+  } else {
+    nagBar.classList.add("hidden");
+  }
+}
+function startVehicleCheck() {
+  loadFormAndShow("Vehicle Safety Check");
+}
+function checkVehicleBeforeVisit(isTravelMode) {
+  const state2 = _getState$6();
+  if (!state2 || !state2.meta) return false;
+  if (!isTravelMode) return false;
+  if (state2.meta.wofExpiry) {
+    const wofDate = new Date(state2.meta.wofExpiry);
+    if (wofDate < /* @__PURE__ */ new Date()) {
+      showModal("wofBlock");
+      return true;
+    }
+    const daysUntil = (wofDate.getTime() - Date.now()) / (1e3 * 60 * 60 * 24);
+    if (daysUntil > 0 && daysUntil < 14) {
+      openWofWarnAsVisitGate(Math.ceil(daysUntil));
+      return true;
+    }
+  }
+  return false;
+}
+function closeWofBlocker() {
+  closeModal("wofBlock");
+}
+function openWofWarnAsVisitGate(daysUntil) {
+  const modal = document.getElementById("wofWarnModal");
+  const warnText = document.getElementById("wofWarnText");
+  const visitSection = document.getElementById("wofWarnVisitSection");
+  const continueBtn = document.getElementById("btnWofContinue");
+  const dismissBtn = document.getElementById("btnWofDismiss");
+  const checkbox = document.getElementById("chkWofAck");
+  if (warnText) warnText.innerText = daysUntil + " day" + (daysUntil === 1 ? "" : "s");
+  if (modal) modal.setAttribute("data-mode", "visit");
+  if (visitSection) visitSection.classList.remove("hidden");
+  if (continueBtn) {
+    continueBtn.classList.remove("hidden");
+    continueBtn.disabled = true;
+    continueBtn.classList.add("bg-gray-700", "text-gray-500");
+    continueBtn.classList.remove("bg-blue-600", "text-white");
+  }
+  if (dismissBtn) dismissBtn.classList.add("hidden");
+  if (checkbox) checkbox.checked = false;
+  showModal("wofWarn");
+}
+function toggleWofContinue() {
+  const checkbox = document.getElementById("chkWofAck");
+  const button = document.getElementById("btnWofContinue");
+  if (checkbox && button) {
+    if (checkbox.checked) {
+      button.disabled = false;
+      button.classList.remove("bg-gray-700", "text-gray-500");
+      button.classList.add("bg-blue-600", "text-white");
+    } else {
+      button.disabled = true;
+      button.classList.add("bg-gray-700", "text-gray-500");
+      button.classList.remove("bg-blue-600", "text-white");
+    }
+  }
+}
+function closeWofWarn() {
+  const modal = document.getElementById("wofWarnModal");
+  const isVisitGate = modal && modal.getAttribute("data-mode") === "visit";
+  const checkbox = document.getElementById("chkWofAck");
+  if (checkbox) checkbox.checked = false;
+  closeModal("wofWarn");
+  if (isVisitGate) startVisit(true);
+}
+let currentActiveTemplate = null;
+let formExecutionContext = null;
+let _getState$5 = () => null;
+function captureGPS(btn) {
+  if (!navigator.geolocation) return showToast("GPS Not Supported");
+  btn.innerText = "⌛...";
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const coords = `${pos.coords.latitude.toFixed(6)}, ${pos.coords.longitude.toFixed(6)}`;
+      const input = btn.nextElementSibling;
+      if (input) input.value = coords;
+      showToast("Location Captured");
+      btn.innerText = "GPS";
+    },
+    (err) => {
+      showToast("GPS Error: Enable location");
+      btn.innerText = "GPS";
+      console.error("GPS capture error:", err);
+    },
+    { enableHighAccuracy: true, timeout: 1e4, maximumAge: 0 }
+  );
+}
+function buildReportForm(templateName, fieldArea) {
+  if (!fieldArea) return;
+  fieldArea.innerHTML = "";
+  const template = { questions: ["[NOTE] Site Information", "[TEXT] Notes", "[SIGN] Signature"] };
+  const questions = template.questions || [];
+  questions.forEach((label, index) => {
+    const isRequired = /^\*\s*\[/.test(label);
+    const normalised = isRequired ? label.replace(/^\*\s*/, "") : label;
+    const tagMatch = normalised.match(/^\[(.*?)\]\s*(.*)$/i);
+    const rawTag = tagMatch ? tagMatch[1].toUpperCase().trim() : "TEXT";
+    let cleanLabel = tagMatch ? tagMatch[2] : normalised;
+    let baseType = rawTag;
+    let options = [];
+    if (rawTag.includes(",")) {
+      const parts = rawTag.split(",");
+      baseType = parts[0].trim();
+      options = parts.slice(1).map((o) => o.trim());
+    }
+    const fieldId = `field_${index}_${cleanLabel.replace(/\s/g, "_")}`;
+    const wrapper = document.createElement("div");
+    wrapper.className = "mb-5";
+    if (!["HEADING", "HEAD", "NOTE"].includes(baseType)) {
+      const labelEl = document.createElement("label");
+      labelEl.className = "block text-xs font-black text-gray-300 uppercase tracking-widest mb-2 ml-1";
+      if (isRequired) {
+        labelEl.innerHTML = escapeHtml(cleanLabel) + ' <span class="text-red-500 font-black" aria-label="required">*</span>';
+      } else {
+        labelEl.innerText = cleanLabel;
+      }
+      wrapper.appendChild(labelEl);
+    }
+    let input;
+    switch (baseType) {
+      case "HEADING":
+      case "HEAD": {
+        const h = document.createElement("h3");
+        h.className = "text-blue-400 font-black text-text-xs uppercase tracking-[0.25em] mb-4 border-b border-blue-500/20 pb-2 mt-6";
+        h.innerText = cleanLabel;
+        wrapper.appendChild(h);
+        fieldArea.appendChild(wrapper);
+        return;
+      }
+      case "NOTE": {
+        const n = document.createElement("div");
+        n.className = "p-4 bg-blue-900/20 border-l-4 border-blue-500 rounded-r-xl text-xs text-blue-100 font-medium italic leading-relaxed";
+        n.innerText = cleanLabel;
+        wrapper.appendChild(n);
+        fieldArea.appendChild(wrapper);
+        return;
+      }
+      case "NUMBER": {
+        const group = document.createElement("div");
+        group.className = "input-group";
+        if (cleanLabel.includes("$")) {
+          group.innerHTML += `<div class="input-addon addon-prefix">$</div>`;
+          cleanLabel = cleanLabel.replace("$", "").trim();
+        }
+        input = document.createElement("input");
+        input.type = "number";
+        input.inputMode = "decimal";
+        input.className = "form-input";
+        group.appendChild(input);
+        const unitMatch = cleanLabel.match(/\((km|hrs|%|m|kg)\)$/i);
+        if (unitMatch) {
+          group.innerHTML += `<div class="input-addon addon-suffix">${unitMatch[1]}</div>`;
+          cleanLabel = cleanLabel.replace(unitMatch[0], "").trim();
+        }
+        wrapper.appendChild(group);
+        break;
+      }
+      case "CHECK":
+      case "CHECKBOX": {
+        const card = document.createElement("div");
+        card.className = "check-card active:bg-blue-900/20 transition-all";
+        card.innerHTML = `
+                    <span class="text-sm font-bold text-gray-300">${cleanLabel}${isRequired ? ' <span class="text-red-500 font-black" aria-label="required">*</span>' : ""}</span>
+                    <input type="checkbox" id="${fieldId}" data-key="${cleanLabel}" class="w-7 h-7 rounded-lg accent-blue-500"${isRequired ? ' data-required="true" data-label="' + cleanLabel + '"' : ""}>
+                `;
+        wrapper.innerHTML = "";
+        wrapper.appendChild(card);
+        break;
+      }
+      case "YESNO":
+      case "YES/NO": {
+        const grid = document.createElement("div");
+        grid.className = "flex gap-2";
+        input = document.createElement("input");
+        input.type = "hidden";
+        if (isRequired) {
+          input.setAttribute("data-required", "true");
+          input.setAttribute("data-label", cleanLabel);
+          input.setAttribute("data-yesno", "true");
+        }
+        ["Yes", "No"].forEach((val) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "flex-1 py-4 bg-gray-800 border-2 border-gray-700 rounded-xl font-black text-xs uppercase tracking-widest text-gray-400";
+          b.innerText = val;
+          b.onclick = () => {
+            grid.querySelectorAll("button").forEach((btn) => btn.className = "flex-1 py-4 bg-gray-800 border-2 border-gray-700 rounded-xl font-black text-xs uppercase tracking-widest text-gray-400");
+            b.className = val === "Yes" ? "flex-1 py-4 bg-blue-600 border-2 border-blue-400 rounded-xl font-black text-xs uppercase tracking-widest text-white shadow-lg" : "flex-1 py-4 bg-red-900/50 border-2 border-red-700 rounded-xl font-black text-xs uppercase tracking-widest text-red-200";
+            input.value = val;
+          };
+          grid.appendChild(b);
+        });
+        wrapper.appendChild(grid);
+        break;
+      }
+      case "PHOTO": {
+        const photoBtn = document.createElement("label");
+        photoBtn.setAttribute("for", fieldId);
+        photoBtn.className = "flex flex-col items-center justify-center gap-2 w-full py-6 bg-gray-800 border-2 border-dashed border-gray-600 rounded-2xl text-gray-400 font-bold text-sm cursor-pointer active:bg-gray-700 transition-colors";
+        photoBtn.innerHTML = `<span class="text-xl">📷</span><span>Take or Attach Photo</span>`;
+        input = document.createElement("input");
+        input.type = "file";
+        input.id = fieldId;
+        input.accept = "image/*";
+        input.setAttribute("capture", "environment");
+        input.className = "absolute opacity-0 w-0 h-0 pointer-events-none";
+        input.onchange = () => handlePhoto(input, cleanLabel);
+        photoBtn.appendChild(input);
+        wrapper.appendChild(photoBtn);
+        const status = document.createElement("div");
+        status.id = `lbl_${fieldId}`;
+        status.className = "text-xs text-blue-400 font-bold mt-2 uppercase text-center";
+        if (isRequired) {
+          status.setAttribute("data-required-photo", fieldId);
+          status.setAttribute("data-label", cleanLabel);
+        }
+        wrapper.appendChild(status);
+        fieldArea.appendChild(wrapper);
+        return;
+      }
+      case "SIGN":
+      case "SIGNATURE": {
+        const canvas = document.createElement("canvas");
+        canvas.id = `sig-canvas-${index}`;
+        canvas.className = "border-2 border-gray-600 rounded-2xl bg-white w-full h-32 shadow-inner";
+        if (isRequired) {
+          canvas.setAttribute("data-required-sig", "true");
+          canvas.setAttribute("data-label", cleanLabel);
+        }
+        wrapper.appendChild(canvas);
+        const clearBtn = document.createElement("button");
+        clearBtn.className = "ttext-xs text-gray-300 font-bold uppercase mt-2 ml-1";
+        clearBtn.innerText = "Clear Signature";
+        clearBtn.onclick = (e) => clearSig(index, e);
+        wrapper.appendChild(clearBtn);
+        input = document.createElement("input");
+        input.type = "hidden";
+        input.setAttribute("data-signature-id", index);
+        break;
+      }
+      case "1TEXT":
+        input = document.createElement("input");
+        input.type = "text";
+        input.placeholder = "Type here...";
+        break;
+      case "TEXT":
+        input = document.createElement("textarea");
+        input.rows = 4;
+        input.placeholder = "Type extended notes...";
+        break;
+      case "DATE":
+        input = document.createElement("input");
+        input.type = "date";
+        break;
+      case "GPS": {
+        const gpsBtn = document.createElement("button");
+        gpsBtn.className = "w-full py-4 bg-blue-900/30 border border-blue-500/50 rounded-2xl text-blue-400 font-black text-xs uppercase tracking-widest mb-2";
+        gpsBtn.innerText = "📍 Capture GPS";
+        gpsBtn.onclick = (e) => {
+          e.preventDefault();
+          captureGPS(gpsBtn);
+        };
+        wrapper.appendChild(gpsBtn);
+        input = document.createElement("input");
+        input.readOnly = true;
+        input.className = "opacity-40";
+        break;
+      }
+      case "DROP":
+        input = document.createElement("select");
+        ["-- Select --", ...options].forEach((o) => {
+          const opt = document.createElement("option");
+          opt.value = o === "-- Select --" ? "" : o;
+          opt.text = o;
+          input.appendChild(opt);
+        });
+        break;
+      default:
+        input = document.createElement("textarea");
+        input.rows = 2;
+        input.placeholder = "Type here...";
+    }
+    if (input && !wrapper.contains(input)) {
+      input.id = fieldId;
+      if (input.type !== "checkbox" && input.type !== "hidden") {
+        input.className = (input.className || "") + " form-input";
+      }
+      input.setAttribute("data-key", cleanLabel);
+      if (isRequired) {
+        input.setAttribute("data-required", "true");
+        input.setAttribute("data-label", cleanLabel);
+      }
+      wrapper.appendChild(input);
+    }
+    fieldArea.appendChild(wrapper);
+  });
+}
+function loadFormAndShow(templateName, context = null) {
+  resetInactivityTimer();
+  formExecutionContext = context || null;
+  const sigCanvas = document.querySelector('canvas[id^="sig-canvas-"]');
+  if (sigCanvas) {
+    clearSig(sigCanvas.id.replace("sig-canvas-", ""));
+  }
+  navigate("report");
+  const title = templateName === "(Standard)" ? "Status Update" : templateName;
+  const titleEl = document.getElementById("reportTitle");
+  if (titleEl) {
+    titleEl.textContent = title;
+  }
+  currentActiveTemplate = templateName;
+  const fieldsContainer = document.getElementById("reportFields");
+  if (fieldsContainer) {
+    buildReportForm(templateName, fieldsContainer);
+  }
+  setTimeout(() => {
+    const canvases = document.querySelectorAll('canvas[id^="sig-canvas-"]');
+    canvases.forEach((canvas) => {
+      resizeCanvas(canvas);
+      initSigPad(canvas);
+    });
+  }, 300);
+  if (formExecutionContext) {
+    setTimeout(() => {
+      const allFormElements = document.querySelectorAll("[data-key]");
+      allFormElements.forEach((el) => {
+        const key = el.getAttribute("data-key").toLowerCase();
+        if (key.includes("site") && formExecutionContext.siteName) {
+          el.value = formExecutionContext.siteName;
+          el.classList.add("bg-blue-900/10");
+        }
+        if (key.includes("company") && formExecutionContext.companyName) {
+          el.value = formExecutionContext.companyName;
+          el.classList.add("bg-blue-900/10");
+        }
+      });
+    }, 500);
+  }
+  const btn = document.getElementById("btnSubmitRep");
+  if (btn) {
+    const newBtn = btn.cloneNode(true);
+    btn.parentNode.replaceChild(newBtn, btn);
+    newBtn.classList.add("active:scale-95", "transition-all", "long-press-btn");
+    let label = "HOLD TO SUBMIT";
+    newBtn.textContent = label;
+    setupLongPress(newBtn, 1500, submitReport);
+  }
+}
+function submitReport() {
+  if (!validateRequiredFields()) return;
+  showToast("📤 Processing report...");
+  const state2 = _getState$5();
+  const d = gatherFormData();
+  let photoCount = 0;
+  const photoMap = {};
+  Object.keys(state2.photoStore || {}).forEach((key) => {
+    photoCount++;
+    const token = `{{PHOTO_${photoCount}}}`;
+    photoMap[`Photo ${photoCount}`] = state2.photoStore[key];
+    if (d.custom[key] !== void 0) {
+      d.custom[key] = token;
+      d.jsonPayload[key] = token;
+    }
+  });
+  const fd = {
+    ...d.custom,
+    "Visit Report Data": JSON.stringify(d.jsonPayload),
+    "Template Name": currentActiveTemplate
+  };
+  for (let key in d.custom) {
+    if (/km|odo|dist/i.test(key)) {
+      const val = parseFloat(d.custom[key]);
+      if (!isNaN(val)) fd["Distance"] = val;
+    }
+  }
+  Object.entries(photoMap).forEach(([k, v]) => {
+    fd[k] = v;
+  });
+  if (d.sig) fd["Signature"] = d.sig;
+  let alarmStatus;
+  let backendAction = "logVisit";
+  if (currentActiveTemplate === "Update Site Procedures") {
+    backendAction = "uploadEmergencyProcedures";
+    alarmStatus = "PROCEDURES_UPDATED";
+  } else if (currentActiveTemplate === "Note to Self") {
+    backendAction = "logNote";
+    alarmStatus = "NOTE_LOGGED";
+  } else {
+    alarmStatus = "DEPARTED";
+  }
+  processUploadQueue(buildPayload({
+    ...fd,
+    "action": backendAction,
+    "Alarm Status": alarmStatus,
+    "Notes": d.notes || ""
+  }));
+  if (currentActiveTemplate && currentActiveTemplate.toLowerCase().includes("vehicle")) {
+    state2.meta.lastVehCheck = (/* @__PURE__ */ new Date()).toISOString();
+    checkVehicleStatus();
+  }
+  {
+    stopGPSMonitoring();
+    state2.activeVisit = null;
+    state2.selectedLocationId = null;
+    state2.visitDurationMinutes = 0;
+    state2.photoStore = {};
+    const slider = document.getElementById("durationSlider");
+    if (slider) {
+      slider.value = 0;
+    }
+    stopTick();
+    clearTravellingInterval();
+    stopWelfareChecks();
+    exitLockedScreen();
+    saveState(state2);
+    navigate("main");
+    if (currentActiveTemplate === "Update Site Procedures") {
+      setTimeout(() => {
+        forceSync(false);
+      }, 1500);
+    } else {
+      renderLocations();
+    }
+    showToast("✅ Safety Session Completed");
+  }
+  const sigCanvas = document.querySelector('canvas[id^="sig-canvas-"]');
+  if (sigCanvas) clearSig(sigCanvas.id.replace("sig-canvas-", ""));
+  formExecutionContext = null;
+}
+function validateRequiredFields() {
+  const missing = [];
+  document.querySelectorAll('[data-required="true"]').forEach((el) => {
+    var _a;
+    const label = el.getAttribute("data-label") || el.getAttribute("data-key") || "Field";
+    let empty = false;
+    if (el.type === "checkbox") {
+      empty = !el.checked;
+    } else if (el.getAttribute("data-yesno")) {
+      empty = !el.value;
+    } else {
+      empty = !el.value || el.value.trim() === "";
+    }
+    if (empty) {
+      missing.push(label);
+      const formInput = (_a = el.closest(".mb-5")) == null ? void 0 : _a.querySelector(".form-input, .check-card");
+      if (formInput) {
+        formInput.style.borderColor = "#ef4444";
+        formInput.style.borderWidth = "2px";
+        const clear = () => {
+          formInput.style.borderColor = "";
+          formInput.style.borderWidth = "";
+          el.removeEventListener("input", clear);
+          el.removeEventListener("change", clear);
+        };
+        el.addEventListener("input", clear, { once: true });
+        el.addEventListener("change", clear, { once: true });
+      }
+    }
+  });
+  document.querySelectorAll("[data-required-photo]").forEach((statusEl) => {
+    const label = statusEl.getAttribute("data-label") || "Photo";
+    const hasPhoto = statusEl.textContent && statusEl.textContent.trim().length > 0;
+    if (!hasPhoto) {
+      missing.push(label);
+      const photoBtn = statusEl.previousElementSibling;
+      if (photoBtn) {
+        photoBtn.style.borderColor = "#ef4444";
+      }
+    }
+  });
+  document.querySelectorAll("canvas[data-required-sig]").forEach((canvas) => {
+    const label = canvas.getAttribute("data-label") || "Signature";
+    let isSigned = false;
+    try {
+      const ctx = canvas.getContext("2d");
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let drawnPixels = 0;
+      for (let i = 3; i < pixels.length; i += 4) {
+        if (pixels[i] > 0) {
+          drawnPixels++;
+          if (drawnPixels >= 50) {
+            isSigned = true;
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      isSigned = true;
+    }
+    if (!isSigned) {
+      missing.push(label);
+      canvas.style.borderColor = "#ef4444";
+      canvas.style.borderWidth = "3px";
+      canvas.addEventListener("pointerdown", () => {
+        canvas.style.borderColor = "";
+        canvas.style.borderWidth = "";
+      }, { once: true });
+    }
+  });
+  if (missing.length > 0) {
+    const names = missing.slice(0, 3).join(", ") + (missing.length > 3 ? "…" : "");
+    showToast(`⚠️ Required: ${names}`);
+    const firstEmpty = document.querySelector('[data-required="true"]');
+    if (firstEmpty) firstEmpty.scrollIntoView({ behavior: "smooth", block: "center" });
+    return false;
+  }
+  return true;
+}
+function gatherFormData() {
+  const d = { custom: {}, notes: "", sig: null, jsonPayload: {} };
+  const sn = document.getElementById("rep_notes");
+  if (sn) d.notes = sn.value;
+  document.querySelectorAll("[data-key]").forEach((el) => {
+    const k = el.getAttribute("data-key");
+    let v = el.value;
+    let isMedia = false;
+    if (el.type === "checkbox") {
+      v = el.checked ? "Yes" : "No";
+    } else if (el.type === "radio") {
+      if (!el.checked) return;
+      v = el.value;
+    } else if (el.type === "hidden" && el.hasAttribute("data-signature-id")) {
+      const sigId = el.getAttribute("data-signature-id");
+      const canvas = document.getElementById(`sig-canvas-${sigId}`);
+      if (canvas) {
+        v = canvas.toDataURL("image/jpeg", 0.5);
+        d.sig = v;
+        isMedia = true;
+      }
+    }
+    d.custom[k] = v;
+    if (isMedia) {
+      d.jsonPayload[k] = "{{SIGNATURE}}";
+    } else {
+      d.jsonPayload[k] = v;
+    }
+  });
+  return d;
+}
+function compressImg(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        const MAX_WIDTH = 800;
+        const MAX_HEIGHT = 800;
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height = height * (MAX_WIDTH / width);
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width = width * (MAX_HEIGHT / height);
+            height = MAX_HEIGHT;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressed = canvas.toDataURL("image/jpeg", 0.6);
+        console.log(`Image optimised for Sheets: ${compressed.length} chars`);
+        resolve(compressed);
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+function handlePhoto(input, key) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const labelId = `lbl_${input.id}`;
+  const statusLabel = document.getElementById(labelId);
+  const state2 = _getState$5();
+  if (statusLabel) {
+    statusLabel.innerText = "⏳ Compressing...";
+    statusLabel.classList.remove("text-blue-400", "text-red-400");
+    statusLabel.classList.add("text-blue-400");
+  }
+  compressImg(file).then((base64) => {
+    if (!state2.photoStore) state2.photoStore = {};
+    state2.photoStore[key] = base64;
+    saveState(state2);
+    if (statusLabel) {
+      statusLabel.innerText = "✅ Photo Saved";
+      statusLabel.classList.add("text-green-400");
+    }
+    console.log(`Photo processed: ${key}`);
+  }).catch((err) => {
+    console.error("Compression Error:", err);
+    if (statusLabel) {
+      statusLabel.innerText = "❌ Compression Failed";
+      statusLabel.classList.add("text-red-400");
+    }
+  });
+}
+function initSigPad(canvas) {
+  if (!canvas) return;
+  resizeCanvas(canvas);
+  const ctx = canvas.getContext("2d");
+  let isDrawing = false;
+  let lastX = 0;
+  let lastY = 0;
+  const getPos = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const touch = e.touches ? e.touches[0] : e;
+    return {
+      x: touch.clientX - rect.left,
+      y: touch.clientY - rect.top
+    };
+  };
+  const startDrawing = (e) => {
+    if (e.type === "mousedown" && e.button !== 0) return;
+    isDrawing = true;
+    const pos = getPos(e);
+    lastX = pos.x;
+    lastY = pos.y;
+    if (e.cancelable) e.preventDefault();
+  };
+  const draw = (e) => {
+    if (!isDrawing) return;
+    if (e.type === "mousemove" && e.buttons === 0) {
+      isDrawing = false;
+      return;
+    }
+    const pos = getPos(e);
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.stroke();
+    lastX = pos.x;
+    lastY = pos.y;
+    if (e.cancelable) e.preventDefault();
+  };
+  const stopDrawing = () => {
+    isDrawing = false;
+  };
+  const handleReEntry = (e) => {
+    if (e.buttons === 1) {
+      const pos = getPos(e);
+      lastX = pos.x;
+      lastY = pos.y;
+      isDrawing = true;
+    }
+  };
+  canvas.addEventListener("touchstart", startDrawing, { passive: false });
+  canvas.addEventListener("touchmove", draw, { passive: false });
+  canvas.addEventListener("touchend", stopDrawing);
+  canvas.addEventListener("touchcancel", stopDrawing);
+  canvas.addEventListener("mousedown", startDrawing);
+  canvas.addEventListener("mousemove", draw);
+  canvas.addEventListener("mouseup", stopDrawing);
+  canvas.addEventListener("mouseenter", handleReEntry);
+}
+function resizeCanvas(canvasEl) {
+  const ratio = window.devicePixelRatio || 1;
+  const rect = canvasEl.getBoundingClientRect();
+  canvasEl.width = rect.width * ratio;
+  canvasEl.height = rect.height * ratio;
+  const ctx = canvasEl.getContext("2d");
+  ctx.scale(ratio, ratio);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, rect.width, rect.height);
+}
+function clearSig(id, event) {
+  if (event && typeof event.preventDefault === "function") {
+    event.preventDefault();
+  }
+  const canvasId = id ? `sig-canvas-${id}` : "sig-canvas";
+  const canvas = document.getElementById(canvasId);
+  if (canvas) {
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    console.log(`Signature cleared: ${canvasId}`);
+  }
+}
+function preDepart() {
+  return;
+}
+function enterLockedScreen() {
+  navigate("locked");
+  const btnDepart = document.getElementById("btnDepart");
+  if (btnDepart) setupLongPress(btnDepart, 1500, preDepart);
+  const btnExtend = document.getElementById("btnExtend");
+  if (btnExtend) setupLongPress(btnExtend, 1500, () => showModal("extend"));
+  const btnSafe = document.getElementById("btnSafe");
+  if (btnSafe) setupLongPress(btnSafe, 1500, iamSafe);
+  startTick();
+  startWelfareChecks();
+  _lockOrientation();
+}
+let _getState$4 = () => null;
+async function startVisit(isSkipCheck = false) {
+  var _a;
+  const state2 = _getState$4();
+  if (state2.activeVisit) return;
+  const btn = document.getElementById("btnStart");
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  const isTravelEarly = !!state2.isTravelActive;
+  if (!isSkipCheck && checkVehicleBeforeVisit(isTravelEarly)) {
+    if (btn) btn.disabled = false;
+    return;
+  }
+  try {
+    await Promise.race([Tone.start(), new Promise((r) => setTimeout(r, 500))]);
+  } catch (e) {
+    console.warn("Audio skipped");
+  }
+  const locId = state2.selectedLocationId;
+  const isTravelMode = !!state2.isTravelActive;
+  if (!locId && !isTravelMode) {
+    if (btn) btn.disabled = false;
+    return showToast("⚠️ Select a destination first");
+  }
+  const loc = state2.locations.find((l) => l.id === locId) || { name: "General Travel", address: "Field Work" };
+  const slider = document.getElementById("durationSlider");
+  const durationMins = DURATION_MAP[parseInt(slider.value)];
+  const isHighRisk = ((_a = document.getElementById("chkHighRisk")) == null ? void 0 : _a.checked) || false;
+  let verifiedStartGPS = "0,0";
+  if (isTravelMode || locId === "travel") {
+    showToast("📍 Locking GPS signal...");
+    try {
+      const freshPos = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 3e3
+        });
+      });
+      verifiedStartGPS = `${freshPos.coords.latitude.toFixed(6)},${freshPos.coords.longitude.toFixed(6)}`;
+      setLastGPS(verifiedStartGPS);
+    } catch (e) {
+      console.warn("GPS signal lock deferred.");
+    }
+    clearGpsTrail();
+    if (verifiedStartGPS && verifiedStartGPS !== "0,0") {
+      const [sLat, sLng] = verifiedStartGPS.split(",").map(Number);
+      if (!isNaN(sLat) && !isNaN(sLng)) appendToGpsTrail(sLat, sLng);
+    }
+    startGPSMonitoring();
+  }
+  if (!isTravelMode && locId !== "travel") setLastGPS(null);
+  const startTime = Date.now();
+  const durationSec = durationMins * 60;
+  const anticipatedDeparture = startTime + durationSec * 1e3;
+  const _resolvedWelfare = (() => {
+    if (state2.visitWelfareOverride) return state2.visitWelfareOverride;
+    if (loc.welfareIntervalMins) return loc.welfareIntervalMins;
+    if (loc.riskLevel && RISK_WELFARE_MAP[loc.riskLevel]) return RISK_WELFARE_MAP[loc.riskLevel];
+    return CONFIG.checkinInterval || 60;
+  })();
+  state2.visitWelfareOverride = null;
+  state2.activeVisit = {
+    locationId: locId || "travel",
+    locationName: loc.name,
+    companyName: loc.companyName || "",
+    locationAddress: loc.address || "",
+    // ADDED: Critical for spreadsheet recording
+    isTravel: isTravelMode,
+    startTime,
+    duration: durationSec,
+    anticipatedDepartureTime: anticipatedDeparture,
+    startGPS: verifiedStartGPS,
+    highRisk: isHighRisk,
+    checkinIntervalMins: _resolvedWelfare,
+    // welfare check interval for this visit
+    isPanic: false,
+    criticalSent: false,
+    warn5minSent: false,
+    warn2minSent: false,
+    warn90Sent: false
+  };
+  state2.isTravelActive = false;
+  state2.travelNoReport = false;
+  saveState(state2);
+  const alarmStatus = isTravelMode ? "TRAVELLING" : "ARRIVED";
+  const logNote = isTravelMode ? `Travel to ${loc.name} started.` : `${loc.name} visit started.`;
+  const arrivalPayload = {
+    "action": "logVisit",
+    "Alarm Status": alarmStatus,
+    "Location Name": loc.name,
+    "Location Address": loc.address || "",
+    "Notes": `${logNote} Duration: ${durationMins}m`,
+    "Anticipated Departure Time": new Date(anticipatedDeparture).toISOString()
+  };
+  if (isTravelMode || locId === "travel") {
+    arrivalPayload["Last Known GPS"] = verifiedStartGPS;
+  }
+  processUploadQueue(buildPayload(arrivalPayload));
+  announce(isTravelMode ? `Travelling to ${loc.name}.` : `${loc.name} started.`);
+  if (isTravelMode || locId === "travel") startTravellingPulse();
+  resetInactivityTimer();
+  renderLocations();
+  updateArrivedButtonState();
+  enterLockedScreen();
+}
+function updateDurationDisplay() {
+  document.querySelectorAll(".dur-btn").forEach((b) => {
+    b.classList.remove("bg-blue-600", "text-white", "border-blue-500");
+    b.classList.add("bg-gray-700/50", "text-gray-400", "border-gray-600");
+  });
+  const slider = document.getElementById("durationSlider");
+  if (!slider) return;
+  const minutes = DURATION_MAP[parseInt(slider.value)];
+  const display = document.getElementById("durationDisplay");
+  if (display) {
+    const dueTime = new Date(Date.now() + minutes * 6e4);
+    const timeStr = dueTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    let durStr = minutes >= 60 ? `${Math.floor(minutes / 60)} hr ${minutes % 60} min` : `${minutes} min`;
+    display.innerHTML = `<span class="text-blue-400 font-bold">${durStr}</span> <span class="mx-2 opacity-20">|</span> <span class="text-gray-400">Due: ${timeStr}</span>`;
+  }
+  updateArrivedButtonState();
+}
+function setQuickDuration(mins) {
+  const slider = document.getElementById("durationSlider");
+  if (!slider) return;
+  const idx = DURATION_MAP.indexOf(mins);
+  if (idx !== -1) {
+    slider.value = idx;
+    updateDurationDisplay();
+    updateArrivedButtonState();
+    if (navigator.vibrate) navigator.vibrate(15);
+  }
+  document.querySelectorAll(".dur-btn").forEach((b) => {
+    b.classList.remove("bg-blue-600", "text-white", "border-blue-500");
+    b.classList.add("bg-gray-700/50", "text-gray-400", "border-gray-600");
+  });
+  const match = [...document.querySelectorAll(".dur-btn")].find((b) => {
+    var _a;
+    return (_a = b.getAttribute("onclick")) == null ? void 0 : _a.includes(`(${mins})`);
+  });
+  if (match) {
+    match.classList.remove("bg-gray-700/50", "text-gray-400", "border-gray-600");
+    match.classList.add("bg-blue-600", "text-white", "border-blue-500");
+  }
+}
+function updateArrivedButtonState() {
+  const btn = document.getElementById("btnStart");
+  const slider = document.getElementById("durationSlider");
+  if (!btn || !slider) return;
+  return;
+}
+function getState() {
+  throw new Error("locations.js: state getter not injected");
+}
+function renderLocations() {
+  const state2 = getState();
+  const list = document.getElementById("locationList");
+  const travelRow = document.getElementById("travelRow");
+  if (!list || !travelRow) {
+    console.error("UI Error: Location containers missing.");
+    return;
+  }
+  list.innerHTML = "";
+  travelRow.innerHTML = "";
+  if (CONFIG.mileageEnabled) {
+    const travelTile = createTravelTile(state2);
+    travelRow.appendChild(travelTile);
+  } else {
+    travelRow.classList.add("hidden");
+  }
+  const sites = state2.locations.filter((loc) => loc && loc.id !== "travel");
+  if (sites.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "col-span-2 p-12 text-center";
+    empty.innerHTML = `
+            <div class="text-4xl mb-4 opacity-20">📡</div>
+            <p class="text-xs font-bold text-blue-300 uppercase tracking-widest mb-4">No Sites Synced</p>
+            <button onclick="forceSync(true)" class="px-6 py-3 bg-blue-600 rounded-xl font-bold text-sm shadow-lg">
+                Download Sites Now
+            </button>
+        `;
+    list.appendChild(empty);
+  } else {
+    sites.forEach((loc) => {
+      const tile = createLocationTile(loc, state2);
+      list.appendChild(tile);
+    });
+  }
+  updateArrivedButtonState();
+}
+function createTravelTile(state2) {
+  const isActive = state2 && state2.isTravelActive;
+  const noReport = !!(state2 && state2.travelNoReport);
+  const tile = document.createElement("div");
+  tile.className = [
+    "w-full h-14 rounded-xl shadow-lg flex items-center justify-between px-4",
+    "cursor-pointer transition-all border-2",
+    isActive ? "border-white scale-[1.02]" : "border-gray-700 hover:border-white/20"
+  ].join(" ");
+  tile.style.background = `linear-gradient(to right, var(--surface), var(--accent))`;
+  if (isActive) tile.style.boxShadow = "0 0 0 2px var(--accent)";
+  tile.innerHTML = `
+        <div class="flex items-center gap-2">
+            <div class="text-xl">🚗</div>
+            <div>
+                <div class="text-sm font-bold text-white tracking-tight leading-none">Travel Mode</div>
+                <div class="text-sm text-indigo-100 font-bold mt-0.5">${noReport ? "Personal travel – no report" : "Report required"}</div>
+            </div>
+        </div>
+        ${isActive ? `<button class="text-indigo-200 hover:text-white p-1 -mr-1 z-20 text-xl"
+            onclick="openTravelSettings(event)">ℹ️</button>` : ""}
+    `;
+  tile.onclick = (e) => {
+    if (e.target.closest("button")) return;
+    const s = getState();
+    s.isTravelActive = !s.isTravelActive;
+    if (!s.isTravelActive) s.travelNoReport = false;
+    const slider = document.getElementById("durationSlider");
+    if (slider) {
+      slider.value = 0;
+      updateDurationDisplay();
+    }
+    renderLocations();
+    updateArrivedButtonState();
+  };
+  return tile;
+}
+function createLocationTile(loc, state2) {
+  const isSel = state2 && state2.selectedLocationId === loc.id;
+  const isCritical = loc.isCritical || false;
+  const tile = document.createElement("div");
+  tile.className = `p-3 rounded-lg border-2 cursor-pointer flex flex-col justify-between h-24 transition-all ${isSel ? "border-blue-500 bg-blue-900/40" : isCritical ? "border-red-900/50 bg-red-950/20" : "border-gray-700 bg-gray-800 hover:bg-gray-750"}`;
+  let icon = "🏢";
+  if (loc.name && loc.name.toLowerCase().includes("home")) icon = "🏠";
+  const hasInfo = !!(loc.address || loc.notes || loc.contactName || loc.contactPhone || loc.contactEmail);
+  tile.innerHTML = `
+        <div class="flex justify-between items-start">
+            <span class="text-2xl">${icon}</span>
+            ${hasInfo ? `<button class="text-gray-300 hover:text-white p-1 -mt-1 -mr-1 z-20 text-xl" onclick="showSiteInfo('${escapeHtml(loc.id)}', event)">ℹ️</button>` : ""}
+        </div>
+        <div>
+            ${loc.companyName ? `<div class="text-xs font-bold text-gray-400 uppercase truncate leading-none mb-1">${escapeHtml(loc.companyName)}</div>` : ""}
+            <div class="text-[13px] font-black text-white truncate leading-tight">${escapeHtml(loc.name)}</div>
+            ${loc.noReport ? `<div class="text-sm text-gray-300 font-bold mt-0.5">No report</div>` : ""}
+        </div>
+    `;
+  tile.onclick = () => {
+    const s = getState();
+    s.selectedLocationId = s.selectedLocationId === loc.id ? null : loc.id;
+    updateWelfareSelector(s.selectedLocationId);
+    renderLocations();
+    updateArrivedButtonState();
+  };
+  return tile;
+}
+function updateWelfareSelector(locationId) {
+  if (!CONFIG.checkinEnabled) return;
+  const row = document.getElementById("welfareIntervalRow");
+  if (!row) return;
+  row.classList.remove("hidden");
+  const state2 = getState();
+  const loc = locationId ? state2.locations.find((l) => l.id === locationId) : null;
+  let defaultMins, hint;
+  if (loc && loc.welfareIntervalMins) {
+    defaultMins = loc.welfareIntervalMins;
+    hint = "Site default";
+  } else if (loc && loc.riskLevel && RISK_WELFARE_MAP[loc.riskLevel]) {
+    defaultMins = RISK_WELFARE_MAP[loc.riskLevel];
+    const colours = { Low: "text-green-400", Medium: "text-yellow-400", High: "text-orange-400", Critical: "text-red-400" };
+    const hintEl = document.getElementById("welfareIntervalHint");
+    if (hintEl) {
+      hintEl.className = `text-xs font-bold italic ${colours[loc.riskLevel] || "text-gray-400"}`;
+      hintEl.textContent = `${loc.riskLevel} risk`;
+    }
+    hint = null;
+  } else {
+    defaultMins = CONFIG.checkinInterval || 60;
+    hint = "Global default";
+  }
+  if (hint) {
+    const hintEl = document.getElementById("welfareIntervalHint");
+    if (hintEl) {
+      hintEl.className = "text-xs text-gray-500 font-bold italic";
+      hintEl.textContent = hint;
+    }
+  }
+  _highlightWelfareBtn(defaultMins);
+  state2.visitWelfareOverride = defaultMins;
+}
+function setVisitWelfare(mins) {
+  const state2 = getState();
+  state2.visitWelfareOverride = mins;
+  _highlightWelfareBtn(mins);
+  const hintEl = document.getElementById("welfareIntervalHint");
+  if (hintEl) {
+    hintEl.className = "text-xs text-blue-400 font-bold italic";
+    hintEl.textContent = "This visit";
+  }
+}
+function _highlightWelfareBtn(mins) {
+  const map = { 10: 0, 15: 1, 30: 2, 60: 3, 120: 4 };
+  const btns = document.querySelectorAll(".welfare-btn");
+  btns.forEach((btn, i) => {
+    const active = map[mins] === i;
+    btn.classList.toggle("bg-teal-700", active);
+    btn.classList.toggle("border-teal-500", active);
+    btn.classList.toggle("text-white", active);
+    btn.classList.toggle("bg-gray-700/50", !active);
+    btn.classList.toggle("border-gray-600", !active);
+    btn.classList.toggle("text-gray-400", !active);
+  });
+}
+function saveSiteWelfareOverride(locId) {
+  const input = document.getElementById("siteWelfareInput");
+  if (!input) return;
+  const mins = parseInt(input.value, 10);
+  if (isNaN(mins) || mins < 5 || mins > 480) {
+    return showToast("⚠️ Enter a value between 5 and 480 minutes");
+  }
+  const state2 = getState();
+  const idx = state2.locations.findIndex((l) => l.id === locId);
+  if (idx < 0) return;
+  state2.locations[idx].welfareIntervalMins = mins;
+  saveState(state2);
+  showToast(`✅ Welfare default set to ${mins}m for this site`);
+  if (state2.selectedLocationId === locId) updateWelfareSelector(locId);
+}
+function clearSiteWelfareOverride(locId) {
+  const state2 = getState();
+  const idx = state2.locations.findIndex((l) => l.id === locId);
+  if (idx < 0) return;
+  delete state2.locations[idx].welfareIntervalMins;
+  saveState(state2);
+  showToast("🗑️ Site welfare default cleared");
+  if (state2.selectedLocationId === locId) updateWelfareSelector(locId);
+}
+function openTravelSettings(event) {
+  if (event) event.stopPropagation();
+  const state2 = getState();
+  const noReport = !!(state2 && state2.travelNoReport);
+  const toggle = document.getElementById("travelNoReportToggle");
+  if (toggle) toggle.checked = noReport;
+  showModal("travelSettings");
+}
+function saveTravelSettings() {
+  const toggle = document.getElementById("travelNoReportToggle");
+  const state2 = getState();
+  if (state2) {
+    state2.travelNoReport = !!(toggle && toggle.checked);
+    saveState(state2);
+  }
+  closeModal("travelSettings");
+  renderLocations();
+  showToast("✅ Travel settings updated");
+}
+function openAddLocationModal() {
+  document.getElementById("locId").value = "";
+  document.getElementById("locBusiness").value = "";
+  document.getElementById("locName").value = "";
+  document.getElementById("locAddr").value = "";
+  document.getElementById("locContactName").value = "";
+  document.getElementById("locContactPhone").value = "";
+  document.getElementById("locContactEmail").value = "";
+  document.getElementById("locCritical").checked = false;
+  const reqReport = document.getElementById("locRequiresReport");
+  if (reqReport) reqReport.checked = true;
+  const tmpl = document.getElementById("locTemplate");
+  if (tmpl) tmpl.value = "";
+  const btnDel = document.getElementById("btnDelLoc");
+  if (btnDel) btnDel.classList.add("hidden");
+  const titleEl = document.querySelector("#locationModal h2");
+  if (titleEl) titleEl.textContent = "Add Location";
+  showModal("location");
+}
+function editManualLocation(id) {
+  const state2 = getState();
+  const location2 = state2.locations.find((x) => x.id === id);
+  if (!location2) return;
+  const titleEl = document.querySelector("#locationModal h2");
+  if (titleEl) titleEl.textContent = "Edit Location";
+  document.getElementById("locId").value = id;
+  document.getElementById("locBusiness").value = location2.companyName || "";
+  document.getElementById("locName").value = location2.name || "";
+  document.getElementById("locAddr").value = location2.address || "";
+  const contactName = document.getElementById("locContactName");
+  const contactPhone = document.getElementById("locContactPhone");
+  const contactEmail = document.getElementById("locContactEmail");
+  if (contactName) contactName.value = location2.contactName || "";
+  if (contactPhone) contactPhone.value = location2.contactPhone || "";
+  if (contactEmail) contactEmail.value = location2.contactEmail || "";
+  const criticalCheckbox = document.getElementById("locCritical");
+  if (criticalCheckbox) criticalCheckbox.checked = location2.isCritical || false;
+  const reqReport = document.getElementById("locRequiresReport");
+  if (reqReport) reqReport.checked = !location2.noReport;
+  const tmpl = document.getElementById("locTemplate");
+  if (tmpl) tmpl.value = location2.templateName || "";
+  const btnDel = document.getElementById("btnDelLoc");
+  if (btnDel) btnDel.classList.remove("hidden");
+  showModal("location");
+}
+function openLocationEditor(locationId) {
+  const state2 = getState();
+  const location2 = state2.locations.find((l) => l.id === locationId);
+  if (!location2) return;
+  document.getElementById("locId").value = location2.id;
+  document.getElementById("locBusiness").value = location2.companyName || "";
+  document.getElementById("locName").value = location2.name || "";
+  document.getElementById("locAddr").value = location2.address || "";
+  document.getElementById("locContactName").value = location2.contactName || "";
+  document.getElementById("locContactPhone").value = location2.contactPhone || "";
+  document.getElementById("locContactEmail").value = location2.contactEmail || "";
+  const criticalCheckbox = document.getElementById("locCritical");
+  if (criticalCheckbox) {
+    criticalCheckbox.checked = location2.isCritical || false;
+  }
+  const btnDel = document.getElementById("btnDelLoc");
+  if (location2.id.startsWith("loc_")) {
+    if (btnDel) btnDel.classList.remove("hidden");
+  } else {
+    if (btnDel) btnDel.classList.add("hidden");
+  }
+  showModal("location");
+}
+function saveLoc() {
+  const locId = document.getElementById("locId").value;
+  const name = document.getElementById("locName").value.trim();
+  if (!name) {
+    alert("Site name is required");
+    return;
+  }
+  const templateInput = document.getElementById("locTemplate");
+  const requiresReportEl = document.getElementById("locRequiresReport");
+  const templateName = templateInput ? templateInput.value.trim() : "";
+  const locationData = {
+    id: locId || "loc_" + Date.now(),
+    name,
+    companyName: document.getElementById("locBusiness").value.trim(),
+    address: document.getElementById("locAddr").value.trim(),
+    contactName: document.getElementById("locContactName").value.trim(),
+    contactPhone: document.getElementById("locContactPhone").value.trim(),
+    contactEmail: document.getElementById("locContactEmail").value.trim(),
+    isCritical: document.getElementById("locCritical").checked,
+    noReport: requiresReportEl ? !requiresReportEl.checked : false,
+    templateName: templateName || null
+  };
+  const state2 = getState();
+  const idx = state2.locations.findIndex((l) => l.id === locationData.id);
+  if (idx >= 0) state2.locations[idx] = locationData;
+  else state2.locations.push(locationData);
+  saveState(state2);
+  renderLocations();
+  closeModal("location");
+  showToast("✅ Location saved");
+}
+function deleteLoc() {
+  const locId = document.getElementById("locId").value;
+  if (!locId || !confirm("Delete this location?")) return;
+  const state2 = getState();
+  state2.locations = state2.locations.filter((l) => l.id !== locId);
+  saveState(state2);
+  renderLocations();
+  closeModal("location");
+  showToast("🗑️ Location deleted");
+}
+function getGpsAddress() {
+  if (!navigator.geolocation) return showToast("GPS not available");
+  showToast("📡 Locking GPS signal...");
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const lat = pos.coords.latitude.toFixed(6);
+      const lon = pos.coords.longitude.toFixed(6);
+      const coordString = `${lat}, ${lon}`;
+      fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`,
+        { headers: { "Accept-Language": "en" } }
+      ).then((r) => r.json()).then((data) => {
+        const addr = data.display_name || coordString;
+        document.getElementById("locAddr").value = addr;
+        showToast("📍 Address captured");
+      }).catch(() => {
+        document.getElementById("locAddr").value = coordString;
+        showToast("📍 GPS captured (no address lookup)");
+      });
+    },
+    (err) => showToast("GPS error: " + err.message),
+    { enableHighAccuracy: true, timeout: 1e4 }
+  );
+}
+function acknowledgeNotice() {
+  closeModal("noticeModal");
+  return;
+}
+function openResourceHub() {
+  renderResources();
+  showModal("resourceHub");
+}
+function switchHubTab(tab) {
+  const isRes = tab === "res";
+  document.getElementById("tabRes").className = isRes ? "pb-2 text-xs font-black uppercase tracking-widest text-blue-500 border-b-2 border-blue-500" : "pb-2 text-xs font-black uppercase tracking-widest text-gray-300";
+  document.getElementById("tabNot").className = !isRes ? "pb-2 text-xs font-black uppercase tracking-widest text-blue-500 border-b-2 border-blue-500" : "pb-2 text-xs font-black uppercase tracking-widest text-gray-300";
+  if (isRes) renderResources();
+  else renderNoticeArchive();
+}
+function renderResources() {
+  const container = document.getElementById("hubContent");
+  const items = [];
+  container.innerHTML = items.length ? items.map((r) => `
+            <div class="p-4 bg-white/5 border border-white/5 rounded-2xl active:scale-95 transition" onclick="window.open('${escapeHtml(r.url)}', '_blank')">
+                <div class="text-xs text-blue-400 font-black uppercase tracking-widest mb-1">${escapeHtml(r.category)}</div>
+                <div class="text-sm font-bold text-white">${escapeHtml(r.title)}</div>
+                <div class="text-sm text-gray-300 mt-2 uppercase font-black">Open ${escapeHtml(r.type)} ↗</div>
+            </div>
+        `).join("") : '<p class="text-center text-xs opacity-40 py-10">No resources assigned.</p>';
+}
+function renderNoticeArchive() {
+  const container = document.getElementById("hubContent");
+  const items = [];
+  container.innerHTML = items.length ? items.map((n) => `
+            <div class="p-4 bg-white/5 border border-white/5 rounded-2xl opacity-60">
+                <div class="text-sm text-gray-300 font-black uppercase tracking-widest mb-1">${escapeHtml(new Date(n.date).toLocaleDateString())}</div>
+                <div class="text-sm font-bold text-white mb-1">${escapeHtml(n.title)}</div>
+                <div class="text-xs text-gray-400 leading-snug">${escapeHtml(n.content)}</div>
+            </div>
+        `).join("") : '<p class="text-center text-xs opacity-40 py-10">Archive empty.</p>';
+}
+function sendDirectAlert() {
+  const w = {};
+  const v = {};
+  const contacts = [.../* @__PURE__ */ new Set([
+    w.emgEmail || w.iceEmail,
+    w.escEmail || w.ice2Email
+  ])].filter(Boolean);
+  if (contacts.length === 0) {
+    showToast("⚠️ No email contacts configured — add them in Settings");
+    return;
+  }
+  const workerName = w.name || "Unknown Worker";
+  const location2 = v.locationName || "Unknown Location";
+  const address = v.locationAddress || "";
+  const gps = getLastGPS() || v.startGPS || null;
+  const alarmTime = (/* @__PURE__ */ new Date()).toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+  const mapsLine = gps && gps !== "0,0" ? `GPS Location:  https://maps.google.com/?q=${gps}` : "GPS Location:  Not available";
+  const subject = encodeURIComponent(
+    `⚠️ SAFETY ALARM — ${workerName} — ${location2}`
+  );
+  const bodyLines = [
+    `SAFETY ALARM — DIRECT DEVICE ALERT`,
+    ``,
+    `Worker:    ${workerName}`,
+    `Location:  ${location2}`,
+    address ? `Address:   ${address}` : null,
+    mapsLine,
+    `Time:      ${alarmTime}`,
+    ``,
+    `This alert was sent DIRECTLY from ${workerName}'s device.`,
+    `The worker did not check in as scheduled.`,
+    ``,
+    `Please attempt contact immediately.`,
+    `If unreachable, contact emergency services and provide the location above.`,
+    ``,
+    `— OTG Lone Worker Safety`
+  ].filter((l) => l !== null).join("\n");
+  const mailto = `mailto:${contacts.join(",")}?subject=${subject}&body=${encodeURIComponent(bodyLines)}`;
+  window.location.href = mailto;
+  showToast("📧 Opening email — tap Send to dispatch");
+}
+function callICE() {
+  const w = {};
+  const phone = w.emgPhone || w.icePhone;
+  w.emgName || w.iceName || "Emergency Contact";
+  if (!phone) {
+    showToast("⚠️ No emergency contact phone configured — add one in Settings");
+    return;
+  }
+  window.location.href = `tel:${phone.replace(/[^\d+]/g, "")}`;
+}
+let _getState$3 = () => null;
+let _getBatteryLevel = () => "100%";
+let _outboxDbInstance = null;
+let _outboxProcessing = false;
+let _outboxRetryDelay = 2e3;
+let _legacyRetryDelay = 2e3;
+let _legacyProcessing = false;
+function buildPayload(d) {
+  var _a;
+  const state2 = _getState$3();
+  let dt = "";
+  let ln = "Unknown Site";
+  let la = "No Address Provided";
+  return {
+    "action": d.action || "logVisit",
+    "key": CONFIG.key,
+    "Worker Name": "",
+    "Worker Phone Number": "",
+    // FIXED: Maps ICE details to the spreadsheet columns
+    "Emergency Contact Name": "",
+    "Emergency Contact Phone": "",
+    "Emergency Contact Email": "",
+    "Emergency Contact Ntfy": "",
+    "Escalation Contact Name": "",
+    "Escalation Contact Phone": "",
+    "Escalation Contact Email": "",
+    "Escalation Contact Ntfy": "",
+    "Battery Level": _getBatteryLevel(),
+    "Location Name": ln,
+    "Location Address": la,
+    "Anticipated Departure Time": dt,
+    "Timestamp": (/* @__PURE__ */ new Date()).toISOString(),
+    "deviceId": "",
+    "Last Known GPS": d["Last Known GPS"] || ((_a = state2 == null ? void 0 : state2.activeVisit) == null ? void 0 : _a.startGPS) || "0,0",
+    ...d
+  };
+}
+function getOutboxDb() {
+  return _outboxDB();
+}
+function _outboxDB() {
+  if (_outboxDbInstance) return Promise.resolve(_outboxDbInstance);
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("otg-outbox", 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains("events")) {
+        const store = db.createObjectStore("events", { keyPath: "id", autoIncrement: true });
+        store.createIndex("status", "status", { unique: false });
+        store.createIndex("idempotencyKey", "idempotencyKey", { unique: true });
+      }
+    };
+    req.onsuccess = (e) => {
+      _outboxDbInstance = e.target.result;
+      resolve(_outboxDbInstance);
+    };
+    req.onerror = (e) => reject(e.target.error);
+    req.onblocked = () => console.warn("Outbox: IndexedDB open blocked by another tab.");
+  });
+}
+async function outboxEnqueue(payload) {
+  var _a;
+  if (!payload) return;
+  const state2 = _getState$3();
+  const wn = (payload["Worker Name"] || ((_a = state2 == null ? void 0 : state2.worker) == null ? void 0 : _a.name) || "unknown").replace(/[^a-zA-Z0-9]/g, "").slice(0, 20);
+  const st = (payload["Alarm Status"] || "LOG").replace(/[^A-Z0-9_\- ]/g, "").replace(/\s+/g, "_").slice(0, 30);
+  const rand = Math.random().toString(36).slice(2, 6);
+  const idempotencyKey = `${wn}:${st}:${Date.now()}:${rand}`;
+  const record = {
+    idempotencyKey,
+    payload: { ...payload, idempotencyKey },
+    // key travels to backend with every attempt
+    status: "pending",
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    sentAt: null,
+    attempts: 0
+  };
+  try {
+    const db = await _outboxDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("events", "readwrite");
+      const req = tx.objectStore("events").add(record);
+      req.onsuccess = resolve;
+      req.onerror = (e) => reject(e.target.error);
+      tx.onerror = (e) => reject(e.target.error);
+    });
+  } catch (e) {
+    console.error("Outbox: IndexedDB write failed — falling back to legacy queue:", e);
+    _legacyEnqueue(payload);
+    return;
+  }
+  outboxProcess();
+}
+async function outboxProcess() {
+  if (_outboxProcessing || !navigator.onLine) return;
+  let db;
+  try {
+    db = await _outboxDB();
+  } catch (e) {
+    return;
+  }
+  const record = await new Promise((resolve) => {
+    const tx = db.transaction("events", "readonly");
+    const req = tx.objectStore("events").index("status").openCursor(IDBKeyRange.only("pending"));
+    req.onsuccess = (e) => {
+      var _a;
+      return resolve(((_a = e.target.result) == null ? void 0 : _a.value) || null);
+    };
+    req.onerror = () => resolve(null);
+  });
+  if (!record) return;
+  _outboxProcessing = true;
+  const fd = new FormData();
+  for (const k in record.payload) fd.append(k, record.payload[k]);
+  try {
+    await fetch(CONFIG.url, { method: "POST", body: fd, mode: "no-cors" });
+    await new Promise((resolve) => {
+      const tx = db.transaction("events", "readwrite");
+      const store = tx.objectStore("events");
+      store.get(record.id).onsuccess = (e) => {
+        const row = e.target.result;
+        if (row) {
+          row.status = "sent";
+          row.sentAt = (/* @__PURE__ */ new Date()).toISOString();
+          row.attempts = (row.attempts || 0) + 1;
+          store.put(row).onsuccess = resolve;
+        } else {
+          resolve();
+        }
+      };
+    });
+    _outboxRetryDelay = 2e3;
+    _outboxProcessing = false;
+    setTimeout(outboxProcess, 500);
+  } catch (e) {
+    await new Promise((resolve) => {
+      const tx = db.transaction("events", "readwrite");
+      const store = tx.objectStore("events");
+      store.get(record.id).onsuccess = (e2) => {
+        const row = e2.target.result;
+        if (row) {
+          row.attempts = (row.attempts || 0) + 1;
+          store.put(row).onsuccess = resolve;
+        } else {
+          resolve();
+        }
+      };
+    });
+    console.warn(`Outbox: send failed. Retrying in ${_outboxRetryDelay / 1e3}s…`);
+    _outboxProcessing = false;
+    setTimeout(outboxProcess, _outboxRetryDelay);
+    _outboxRetryDelay = Math.min(_outboxRetryDelay * 2, 6e4);
+  }
+}
+function _legacyEnqueue(payload) {
+  const state2 = _getState$3();
+  if (payload) {
+    if (state2.pendingUploads.length > 100) state2.pendingUploads.shift();
+    state2.pendingUploads.push(payload);
+  }
+  if (_legacyProcessing || !navigator.onLine || state2.pendingUploads.length === 0) return;
+  _legacyProcessing = true;
+  const item = state2.pendingUploads[0];
+  const fd = new FormData();
+  for (const k in item) fd.append(k, item[k]);
+  fetch(CONFIG.url, { method: "POST", body: fd, mode: "no-cors" }).then(() => {
+    state2.pendingUploads.shift();
+    _legacyRetryDelay = 2e3;
+    _legacyProcessing = false;
+    if (state2.pendingUploads.length > 0) setTimeout(_legacyEnqueue, 500);
+  }).catch(() => {
+    _legacyProcessing = false;
+    setTimeout(_legacyEnqueue, _legacyRetryDelay);
+    _legacyRetryDelay = Math.min(_legacyRetryDelay * 2, 6e4);
+  });
+}
+function processUploadQueue(payload) {
+  if (payload) outboxEnqueue(payload);
+  else outboxProcess();
+}
+function forceSync(showUI) {
+  if (!CONFIG.key || CONFIG.key.length < 3) {
+    if (showUI) showToast("⚠️ Template mode - awaiting deployment");
+    return;
+  }
+  return;
+}
+let _getState$2 = () => null;
+function withPinVerification(isDuress, successCallback) {
+  showModal("pin");
+  const input = document.getElementById("pinInput");
+  const confirmBtn = document.getElementById("btnPinConfirm");
+  input.value = "";
+  input.focus();
+  confirmBtn.onclick = () => {
+    var _a, _b;
+    const entered = input.value;
+    const state2 = _getState$2();
+    const correctStd = (_a = state2 == null ? void 0 : state2.pins) == null ? void 0 : _a.std;
+    const correctDur = (_b = state2 == null ? void 0 : state2.pins) == null ? void 0 : _b.duress;
+    const isCurrentlyAlarmed = document.body.classList.contains("panic-mode");
+    if (entered === correctStd) {
+      closeModal("pin");
+      successCallback();
+    } else if (entered === correctDur) {
+      closeModal("pin");
+      if (isCurrentlyAlarmed) {
+        document.body.classList.remove("bg-red-900", "panic-mode", "strobe-active");
+        if (window.speechSynthesis) window.speechSynthesis.cancel();
+        showToast("✅ Alarm Successfully Cleared");
+      } else {
+        showToast("✅ System Reset Successful");
+      }
+      triggerPanic(true);
+      successCallback();
+    } else {
+      showToast("❌ Incorrect PIN");
+      input.value = "";
+      if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+    }
+  };
+}
+async function triggerPanic(duress = false) {
+  await new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLastGPS(`${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`);
+        resolve();
+      },
+      () => resolve(),
+      // timeout / denied — getLastGPS() unchanged, alert still sends
+      { enableHighAccuracy: true, timeout: 5e3, maximumAge: 0 }
+    );
+  });
+  if (!isGPSMonitoringActive()) startGPSMonitoring();
+  if (duress) {
+    document.body.classList.remove("bg-red-900", "panic-mode", "strobe-active");
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+    showToast("✅ System Reset Successful");
+    console.log("SILENT DURESS: UI remains normal but backend alerted.");
+  } else {
+    document.body.classList.add("bg-red-900", "panic-mode", "strobe-active");
+    announce("Panic alarm activated.");
+    await playPanicTone();
+  }
+  await logSafety(
+    duress ? "DURESS" : "PANIC",
+    duress ? "Silent duress alert — triggered via Shake to Alert." : "Manual SOS"
+  );
+  closeModal("pin");
+  closeModal("notice");
+  closeModal("resourceHub");
+  if (!duress) {
+    renderPanicState();
+    showAlarmButtons();
+  }
+}
+function iamSafe() {
+  return;
+}
+function renderPanicState() {
+  const lockedPage = document.getElementById("lockedPage");
+  if (lockedPage) lockedPage.classList.add("panic-mode");
+  const btnDepart = document.getElementById("btnDepart");
+  if (btnDepart) btnDepart.classList.add("hidden");
+  const btnExtend = document.getElementById("btnExtend");
+  if (btnExtend) btnExtend.classList.add("hidden");
+  const btnSafe = document.getElementById("btnSafe");
+  if (btnSafe) {
+    btnSafe.classList.remove("hidden");
+    setupLongPress(btnSafe, 1500, iamSafe);
+  }
+}
+let _getState$1 = () => null;
+function confirmExtension(minutes) {
+  const state2 = _getState$1();
+  const updateTime = () => {
+    const currentDue = state2.activeVisit.anticipatedDepartureTime;
+    const newDue = currentDue + minutes * 6e4;
+    state2.activeVisit.anticipatedDepartureTime = newDue;
+    state2.activeVisit.duration += minutes * 60;
+    state2.activeVisit.isSafeConfirmed = false;
+    state2.activeVisit.isPanic = false;
+    state2.activeVisit.criticalSent = false;
+    state2.activeVisit.overdueGpsSent = false;
+    state2.activeVisit.warn5minSent = false;
+    state2.activeVisit.warn2minSent = false;
+    state2.activeVisit.warn90Sent = false;
+    document.body.classList.remove("bg-red-900", "panic-mode");
+    const timerEl = document.getElementById("countdownTimer");
+    if (timerEl) timerEl.classList.remove("text-red-500", "animate-pulse");
+    const overdueLabel = document.getElementById("overdueLabel");
+    if (overdueLabel) {
+      overdueLabel.classList.add("hidden");
+      overdueLabel.innerText = "OVERDUE";
+    }
+    saveState(state2);
+    processUploadQueue(buildPayload({
+      "Alarm Status": "EXTENDED",
+      "Notes": `Extended ${minutes}m`,
+      "Anticipated Departure Time": new Date(newDue).toISOString()
+    }));
+    showToast(`✅ Visit extended by ${minutes} minutes`);
+    closeModal("extend");
+  };
+  if (state2.activeVisit.criticalSent || state2.activeVisit.isPanic) {
+    withPinVerification(false, updateTime);
+  } else {
+    updateTime();
+  }
+}
+let _getState = () => ({});
+function cleanGlobalPhone(num) {
+  if (!num) return "";
+  let n = num.replace(/[^0-9]/g, "");
+  const prefix = (CONFIG.countryPrefix || "+64").replace("+", "");
+  if (!prefix) return "+" + n;
+  if (n.startsWith(prefix)) return "+" + n;
+  if (n.startsWith("0")) return "+" + prefix + n.substring(1);
+  if (prefix === "1" && n.length === 10) return "+1" + n;
+  return "+" + prefix + n;
+}
+function populateSiteInfoModal(location2) {
+  const content = document.getElementById("siteInfoContent");
+  if (!content) return;
+  let html = `<div class="space-y-4">
+        <div>
+            <label class="text-xs text-blue-400 font-black uppercase tracking-widest">Site Name</label>
+            <div class="text-lg font-bold text-white">${escapeHtml(location2.name)}</div>
+        </div>`;
+  if (location2.companyName) html += `<div><label class="text-sm text-gray-300 font-black uppercase tracking-widest">Company</label><div class="text-white">${escapeHtml(location2.companyName)}</div></div>`;
+  if (location2.address) html += `<div><label class="text-sm text-gray-300 font-black uppercase tracking-widest">Address</label><div class="text-white">${escapeHtml(location2.address)}</div></div>`;
+  if (location2["Emergency Procedures"]) {
+    html += `<div class="pt-2">
+            <button onclick="viewEmergencyProcedures('${location2["Emergency Procedures"]}')" 
+                    class="w-full py-4 bg-red-600 text-white font-black rounded-2xl flex items-center justify-center gap-2 shadow-lg active:scale-95 transition-transform">
+                🚨 VIEW EMERGENCY PROCEDURES
+            </button>
+        </div>`;
+  } else {
+    const ctx = { siteName: location2.name, companyName: location2.companyName || "" };
+    const ctxSafe = JSON.stringify(ctx).replace(/"/g, "&quot;");
+    html += `<div class="pt-2">
+            <button onclick="closeModal('info'); loadFormAndShow('Update Site Procedures', ${ctxSafe})" 
+                    class="w-full py-4 bg-gray-800 border-2 border-dashed border-gray-600 text-gray-400 font-bold rounded-2xl flex flex-col items-center justify-center gap-1 active:bg-gray-700 active:scale-95 transition-all">
+                <span class="text-xs uppercase tracking-widest opacity-60">No Emergency Info Found</span>
+                <span class="text-xs text-blue-400 font-black uppercase">Click to Submit Procedures</span>
+            </button>
+        </div>`;
+  }
+  if (location2.contactName || location2.contactPhone) {
+    html += `<div class="pt-2 border-t border-gray-700">
+            <label class="text-xs text-red-400 font-black uppercase tracking-widest">Contact</label>
+            <div class="text-white font-bold">${escapeHtml(location2.contactName || "Primary Contact")}</div>
+            ${location2.contactPhone ? `<div class="text-gray-400 text-xs">${escapeHtml(location2.contactPhone)}</div>` : ""}
+        </div>`;
+  }
+  if (location2.notes) {
+    html += `<div class="p-3 bg-blue-900/10 rounded-xl border border-blue-500/20 mt-2">
+            <label class="text-xs text-blue-400 font-black uppercase tracking-widest mb-1 block">Notes</label>
+            <div class="text-xs text-gray-300 italic">${escapeHtml(location2.notes)}</div>
+        </div>`;
+  }
+  if (CONFIG.checkinEnabled) {
+    const riskColours = {
+      Low: "bg-green-900/40 text-green-400 border-green-700",
+      Medium: "bg-yellow-900/40 text-yellow-400 border-yellow-700",
+      High: "bg-orange-900/40 text-orange-400 border-orange-700",
+      Critical: "bg-red-900/40 text-red-400 border-red-700"
+    };
+    const riskClass = location2.riskLevel && riskColours[location2.riskLevel] ? riskColours[location2.riskLevel] : "bg-gray-800 text-gray-400 border-gray-600";
+    const riskLabel = location2.riskLevel || "Not set";
+    const savedMins = location2.welfareIntervalMins || "";
+    const effectiveMins = savedMins || location2.riskLevel && RISK_WELFARE_MAP[location2.riskLevel] || CONFIG.checkinInterval || 60;
+    const effectiveLabel = savedMins ? `${savedMins}m (site default)` : location2.riskLevel && RISK_WELFARE_MAP[location2.riskLevel] ? `${effectiveMins}m (${location2.riskLevel} risk default)` : `${effectiveMins}m (global default)`;
+    html += `<div class="pt-3 border-t border-gray-700 mt-2">
+            <div class="flex items-center justify-between mb-2">
+                <label class="text-xs text-teal-400 font-black uppercase tracking-widest">🔔 Welfare Check</label>
+                <span class="text-xs px-2 py-0.5 rounded border font-black uppercase tracking-widest ${riskClass}">${escapeHtml(riskLabel)}</span>
+            </div>
+            <p class="text-xs text-gray-400 mb-2">Effective: <strong class="text-white">${effectiveLabel}</strong></p>
+            <div class="flex gap-2 items-center">
+                <input id="siteWelfareInput" type="number" min="5" max="480" value="${escapeHtml(String(savedMins || effectiveMins))}"
+                       class="w-20 bg-gray-900 border border-gray-600 rounded-lg px-2 py-1.5 text-white text-sm text-center font-mono focus:border-teal-500 focus:outline-none"
+                       placeholder="${effectiveMins}">
+                <span class="text-xs text-gray-400">mins</span>
+                <button onclick="saveSiteWelfareOverride('${escapeHtml(location2.id)}')"
+                        class="flex-1 py-1.5 bg-teal-700 hover:bg-teal-600 text-white text-xs font-black rounded-lg transition-colors">
+                    Save Default
+                </button>
+                ${savedMins ? `<button onclick="clearSiteWelfareOverride('${escapeHtml(location2.id)}')"
+                        class="py-1.5 px-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs font-black rounded-lg transition-colors">
+                    ✕
+                </button>` : ""}
+            </div>
+            <p class="text-xs text-gray-500 mt-1.5 italic">Saved here as the default for every visit to this site. Adjust per-visit on the home screen.</p>
+        </div>`;
+  }
+  html += `</div>`;
+  content.innerHTML = html;
+  const btnCall = document.getElementById("btnSiteCall");
+  const btnEmail = document.getElementById("btnSiteEmail");
+  const btnNav = document.getElementById("btnSiteNav");
+  if (location2.contactPhone && btnCall) {
+    btnCall.href = `tel:${cleanGlobalPhone(location2.contactPhone)}`;
+    btnCall.classList.remove("hidden");
+  } else if (btnCall) btnCall.classList.add("hidden");
+  if (location2.contactEmail && btnEmail) {
+    btnEmail.href = `mailto:${location2.contactEmail}`;
+    btnEmail.classList.remove("hidden");
+  } else if (btnEmail) btnEmail.classList.add("hidden");
+  if (location2.address && btnNav) {
+    const encodedAddr = encodeURIComponent(location2.address);
+    btnNav.href = `https://www.google.com/maps/search/?api=1&query=${encodedAddr}`;
+    btnNav.classList.remove("hidden");
+  } else if (btnNav) {
+    btnNav.classList.add("hidden");
+  }
+}
+function showSiteInfo(locationId, event) {
+  if (event) event.stopPropagation();
+  const state2 = _getState();
+  const location2 = state2.locations.find((l) => l.id === locationId);
+  if (location2) {
+    populateSiteInfoModal(location2);
+    showModal("info");
+  }
+}
+function showCurrentSiteInfo() {
+  const state2 = _getState();
+  if (!state2 || !state2.activeVisit) return;
+  const location2 = state2.locations.find((l) => l.id === state2.activeVisit.locationId);
+  if (location2) {
+    populateSiteInfoModal(location2);
+    showModal("info");
+  }
+}
+function viewEmergencyProcedures(linksString) {
+  if (!linksString) {
+    showToast("⚠️ No procedures linked to this site");
+    return;
+  }
+  const links = linksString.split(",").map((l) => l.trim()).filter((l) => l !== "");
+  if (links.length === 0) return;
+  if (links.length === 1) {
+    window.open(links[0], "_blank");
+  } else {
+    showToast(`Opening ${links.length} procedure pages...`);
+    links.forEach((url, index) => {
+      setTimeout(() => {
+        window.open(url, "_blank");
+      }, index * 600);
+    });
+  }
+}
+function startWizard() {
+  const setupPage = document.getElementById("setupPage");
+  if (setupPage) setupPage.classList.add("active");
+  document.querySelectorAll(".page").forEach((p) => {
+    if (p.id !== "setupPage") p.classList.remove("active");
+  });
+  document.querySelectorAll('[id^="wizStep"]').forEach((step) => {
+    step.classList.remove("active");
+  });
+  const step1 = document.getElementById("wizStep1");
+  if (step1) step1.classList.add("active");
+  const btnPrev = document.getElementById("btnWizPrev");
+  const btnNext = document.getElementById("btnWizNext");
+  if (btnPrev) btnPrev.classList.add("hidden");
+  if (btnNext) btnNext.classList.remove("hidden");
+  console.log("Wizard started");
+}
+function prevWiz() {
+  return;
+}
+function nextWiz() {
+  return;
+}
+function checkWizPinMatch() {
+  var _a, _b, _c, _d;
+  const pin = ((_a = document.getElementById("wizPin")) == null ? void 0 : _a.value) || "";
+  const pinC = ((_b = document.getElementById("wizPinConfirm")) == null ? void 0 : _b.value) || "";
+  const dur = ((_c = document.getElementById("wizDuress")) == null ? void 0 : _c.value) || "";
+  const durC = ((_d = document.getElementById("wizDuressConfirm")) == null ? void 0 : _d.value) || "";
+  const btnNext = document.getElementById("btnWizNext");
+  const err = document.getElementById("pinMatchError");
+  const ok = document.getElementById("pinMatchOk");
+  const hasInput = pinC !== "" || durC !== "";
+  const pinFull = pin.length === 4 && dur.length === 4;
+  const pinsMatch = pin === pinC && dur === durC;
+  const pinsDistinct = pin !== dur;
+  const allGood = pinFull && pinsMatch && pinsDistinct;
+  if (btnNext) {
+    btnNext.disabled = !allGood;
+    btnNext.classList.toggle("opacity-50", !allGood);
+  }
+  err == null ? void 0 : err.classList.add("hidden");
+  ok == null ? void 0 : ok.classList.add("hidden");
+  if (!hasInput) return;
+  if (allGood) {
+    ok == null ? void 0 : ok.classList.remove("hidden");
+  } else {
+    if (err) {
+      if (!pinsDistinct && pinFull) {
+        err.textContent = "⚠️ Safety PIN and Duress PIN must be different.";
+      } else if (pinFull && !pinsMatch) {
+        err.textContent = "⚠️ PINs do not match — please re-enter.";
+      } else if (pinC !== "" && pin !== pinC) {
+        err.textContent = "⚠️ Safety PIN confirmation does not match.";
+      } else if (durC !== "" && dur !== durC) {
+        err.textContent = "⚠️ Duress PIN confirmation does not match.";
+      } else {
+        err.textContent = "⚠️ Both PINs must be 4 digits and confirmed.";
+      }
+      err.classList.remove("hidden");
+    }
+  }
+}
+function triggerInstall() {
+}
+function dismissInstall(type) {
+  if (type === "ios") {
+    const modal = document.getElementById("iosInstallModal");
+    if (modal) modal.classList.add("hidden");
+  } else if (type === "android") {
+    const banner = document.getElementById("installBanner");
+    if (banner) banner.classList.add("hidden");
+  }
+  localStorage.setItem("otg_install_dismissed", "true");
+}
+function openFormsLibrary() {
+  document.getElementById("lockedPage").classList.contains("active");
+  const list = document.getElementById("formsLibraryList");
+  if (!list) return;
+  list.innerHTML = "";
+  const forms = [];
+  if (forms.length === 0) {
+    list.innerHTML = '<div class="p-8 text-center opacity-40 text-xs font-bold uppercase tracking-widest">No templates available.</div>';
+  } else {
+    list.className = "grid grid-cols-2 gap-3 overflow-y-auto pr-2";
+    forms.forEach((form) => {
+      const row = document.createElement("div");
+      row.className = "p-4 bg-white/5 border border-white/10 rounded-2xl flex flex-col items-center justify-center text-center active:scale-95 transition-all aspect-square";
+      let icon = "📋";
+      if (form.name.toLowerCase().includes("vehicle")) icon = "🚗";
+      if (form.name.toLowerCase().includes("audit")) icon = "🔍";
+      if (form.name.toLowerCase().includes("incident")) icon = "⚠️";
+      row.innerHTML = `
+                <div class="text-3xl mb-2">${icon}</div>
+                <div class="text-sm font-extrabold tracking-tight leading-tight" style="color:var(--text-on-primary)">${escapeHtml(form.name)}</div>
+                <div class="text-xs text-blue-400 font-bold uppercase mt-1">${form.questions.length} Checks</div>
+            `;
+      row.onclick = () => {
+        closeModal("formsLibrary");
+        loadFormAndShow(form.name);
+      };
+      list.appendChild(row);
+    });
+  }
+  showModal("formsLibrary");
+}
+function toggleHighRiskUI() {
+  const checkbox = document.getElementById("chkHighRisk");
+  if (!checkbox) return;
+  if (checkbox.checked) {
+    showToast("⚡ Critical timing mode ON - Zero grace period");
+  } else {
+    showToast("✅ Critical timing mode OFF");
+  }
+}
+document.addEventListener("DOMContentLoaded", loadConfig);
+let state;
+["mousedown", "touchstart", "scroll", "keydown"].forEach((evt) => {
+  document.addEventListener(evt, () => {
+    const saverEl = document.getElementById("batterySaver");
+    if (saverEl && !saverEl.classList.contains("hidden")) return;
+  }, { passive: true });
+});
+const wakeButton = document.getElementById("wakeButton");
+if (wakeButton) {
+  wakeButton.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    let wakeTimer = setTimeout(() => {
+      resetInactivityTimer();
+    }, 1500);
+    ["touchend", "touchcancel"].forEach((ev) => {
+      document.addEventListener(ev, () => clearTimeout(wakeTimer), { once: true });
+    });
+  });
+}
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").then((registration) => {
+    console.log("Service Worker registered:", registration.scope);
+    setInterval(() => registration.update(), 30 * 60 * 1e3);
+    registration.addEventListener("updatefound", () => {
+      const newWorker = registration.installing;
+      newWorker.addEventListener("statechange", () => {
+        if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
+          newWorker.postMessage({ type: "SKIP_WAITING" });
+        }
+      });
+    });
+  }).catch((err) => {
+    console.error("Service Worker registration failed:", err);
+  });
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!refreshing) {
+      refreshing = true;
+      window.location.reload();
+    }
+  });
+}
+window.addEventListener("beforeunload", () => {
+  stopGPSMonitoring();
+  stopWelfareChecks();
+  clearTravellingInterval();
+  stopTick();
+});
+document.addEventListener("visibilitychange", async () => {
+});
+window.acknowledgeNotice = typeof acknowledgeNotice !== "undefined" ? acknowledgeNotice : void 0;
+window.callICE = typeof callICE !== "undefined" ? callICE : void 0;
+window.checkWizPinMatch = typeof checkWizPinMatch !== "undefined" ? checkWizPinMatch : void 0;
+window.clearData = typeof clearData !== "undefined" ? clearData : void 0;
+window.clearFormsCache = typeof clearFormsCache !== "undefined" ? clearFormsCache : void 0;
+window.clearSiteWelfareOverride = typeof clearSiteWelfareOverride !== "undefined" ? clearSiteWelfareOverride : void 0;
+window.closeModal = typeof closeModal !== "undefined" ? closeModal : void 0;
+window.closeWofBlocker = typeof closeWofBlocker !== "undefined" ? closeWofBlocker : void 0;
+window.closeWofWarn = typeof closeWofWarn !== "undefined" ? closeWofWarn : void 0;
+window.confirmExtension = typeof confirmExtension !== "undefined" ? confirmExtension : void 0;
+window.confirmWelfare = typeof confirmWelfare !== "undefined" ? confirmWelfare : void 0;
+window.deleteLoc = typeof deleteLoc !== "undefined" ? deleteLoc : void 0;
+window.dismissInstall = typeof dismissInstall !== "undefined" ? dismissInstall : void 0;
+window.editManualLocation = typeof editManualLocation !== "undefined" ? editManualLocation : void 0;
+window.exportMySites = typeof exportMySites !== "undefined" ? exportMySites : void 0;
+window.forceSync = typeof forceSync !== "undefined" ? forceSync : void 0;
+window.getGpsAddress = typeof getGpsAddress !== "undefined" ? getGpsAddress : void 0;
+window.importMySites = typeof importMySites !== "undefined" ? importMySites : void 0;
+window.loadFormAndShow = typeof loadFormAndShow !== "undefined" ? loadFormAndShow : void 0;
+window.navigate = typeof navigate !== "undefined" ? navigate : void 0;
+window.nextWiz = typeof nextWiz !== "undefined" ? nextWiz : void 0;
+window.openAddLocationModal = typeof openAddLocationModal !== "undefined" ? openAddLocationModal : void 0;
+window.openFormsLibrary = typeof openFormsLibrary !== "undefined" ? openFormsLibrary : void 0;
+window.openLocationEditor = typeof openLocationEditor !== "undefined" ? openLocationEditor : void 0;
+window.openResourceHub = typeof openResourceHub !== "undefined" ? openResourceHub : void 0;
+window.openTravelSettings = typeof openTravelSettings !== "undefined" ? openTravelSettings : void 0;
+window.outboxProcess = typeof outboxProcess !== "undefined" ? outboxProcess : void 0;
+window.prevWiz = typeof prevWiz !== "undefined" ? prevWiz : void 0;
+window.saveLoc = typeof saveLoc !== "undefined" ? saveLoc : void 0;
+window.saveSettings = typeof saveSettings !== "undefined" ? saveSettings : void 0;
+window.saveSiteWelfareOverride = typeof saveSiteWelfareOverride !== "undefined" ? saveSiteWelfareOverride : void 0;
+window.saveState = () => saveState(state);
+window.saveTravelSettings = typeof saveTravelSettings !== "undefined" ? saveTravelSettings : void 0;
+window.sendDirectAlert = typeof sendDirectAlert !== "undefined" ? sendDirectAlert : void 0;
+window.sendTestAlert = typeof sendTestAlert !== "undefined" ? sendTestAlert : void 0;
+window.setQuickDuration = typeof setQuickDuration !== "undefined" ? setQuickDuration : void 0;
+window.setVisitWelfare = typeof setVisitWelfare !== "undefined" ? setVisitWelfare : void 0;
+window.showCurrentSiteInfo = typeof showCurrentSiteInfo !== "undefined" ? showCurrentSiteInfo : void 0;
+window.showModal = typeof showModal !== "undefined" ? showModal : void 0;
+window.showSiteInfo = typeof showSiteInfo !== "undefined" ? showSiteInfo : void 0;
+window.showToast = typeof showToast !== "undefined" ? showToast : void 0;
+window.startVehicleCheck = typeof startVehicleCheck !== "undefined" ? startVehicleCheck : void 0;
+window.startWizard = typeof startWizard !== "undefined" ? startWizard : void 0;
+window.switchHubTab = typeof switchHubTab !== "undefined" ? switchHubTab : void 0;
+window.toggleAdvancedGPS = typeof toggleAdvancedGPS !== "undefined" ? toggleAdvancedGPS : void 0;
+window.toggleHighRiskUI = typeof toggleHighRiskUI !== "undefined" ? toggleHighRiskUI : void 0;
+window.toggleWofContinue = typeof toggleWofContinue !== "undefined" ? toggleWofContinue : void 0;
+window.triggerInstall = typeof triggerInstall !== "undefined" ? triggerInstall : void 0;
+window.triggerPanic = typeof triggerPanic !== "undefined" ? triggerPanic : void 0;
+window.updateDurationDisplay = typeof updateDurationDisplay !== "undefined" ? updateDurationDisplay : void 0;
+window.viewEmergencyProcedures = typeof viewEmergencyProcedures !== "undefined" ? viewEmergencyProcedures : void 0;</script>
+  <style rel="stylesheet" crossorigin>/* 1. RUNTIME THEME — defaults overridden at boot by applyTheme() from config.json */
+:root {
+    --primary:          #1e3a8a;
+    --accent:           #3b82f6;
+    --surface:          #1e2f6a;
+    --accent-glow:      rgba(59,130,246,0.25);
+    --text-on-primary:  #ffffff;
+    --text-on-accent:   #ffffff;
+}
+
+/* 2. FORCE SYSTEM DIM: Required to dim the OS navigation bar for Battery Saver */
+html.system-dim, body.system-dim { 
+    background-color: #000000 !important; 
+    color-scheme: dark !important; 
+}
+
+/* 3. SOPHISTICATED UI BASE */
+body { 
+    font-family: 'Inter', sans-serif; 
+    -webkit-tap-highlight-color: transparent; 
+    user-select: none; 
+    overscroll-behavior-y: contain; 
+    background-color: var(--primary); 
+    color: var(--text-on-primary); 
+    height: 100%; 
+    width: 100%; 
+    overflow: hidden; 
+    display: flex; /* Added flex */
+    flex-direction: column; /* Stacks banners above pages */
+    padding-top: env(safe-area-inset-top); /* Handles notch globally */
+}
+#pageContainer {
+    flex: 1;               /* Takes all remaining body height after banners */
+    position: relative;    /* Establishes containing block for absolute pages */
+    overflow: hidden;      /* Clips any overflowing page content */
+    min-height: 0;         /* Critical: allows flex child to shrink below content size */
+}
+.page { 
+    display: none;
+    position: absolute;    /* Fill pageContainer exactly — not flex siblings */
+    top: 0; left: 0; right: 0; bottom: 0;
+    flex-direction: column; 
+    background-color: var(--primary);
+    overflow: hidden;
+}
+.page.active { display: flex; z-index: 10; }
+
+.header-bar { padding: 0.75rem 1rem; background-color: var(--primary); border-bottom: 1px solid rgba(255,255,255,0.1); flex-shrink: 0; z-index: 20; display: flex; justify-content: space-between; align-items: center; }
+.content-area { 
+    flex: 1; 
+    padding: 1rem; 
+    overflow-y: auto; /* Enables vertical scrolling */
+    -webkit-overflow-scrolling: touch; /* Ensures smooth 'momentum' scrolling on iPhones */
+    display: flex;
+    flex-direction: column;
+}
+.footer-bar {
+    flex-shrink: 0; /* Prevents the footer from being squashed by long forms */
+}
+/* 4. LONG-PRESS INTERACTION STYLES */
+.long-press-btn { position: relative; overflow: hidden; transition: all 0.2s; user-select: none; }
+.long-press-btn.pressing::after,
+.long-press-btn.holding::after { 
+    width: 100%; 
+    transition: width 1.8s linear; 
+}
+/* 3. ANIMATION PATCH: High-visibility blue fill */
+.long-press-btn::after { 
+    content: ''; 
+    position: absolute; 
+    top: 0; 
+    left: 0; 
+    width: 0; 
+    height: 100%; 
+    background: rgba(59, 130, 246, 0.5); /* Semi-transparent blue */
+    transition: width 0.2s ease-out; 
+    z-index: 0;
+}
+/* 5. GPS SIGNAL BARS */
+.gps-bar { width: 4px; height: 12px; background-color: #374151; border-radius: 1px; transition: background-color 0.3s; }
+.gps-bar.active-red { background-color: #ef4444; box-shadow: 0 0 5px #ef4444; }
+.gps-bar.active-amber { background-color: #f59e0b; box-shadow: 0 0 5px #f59e0b; }
+.gps-bar.active-green { background-color: #22c55e; box-shadow: 0 0 5px #22c55e; }
+.gps-bar.active-blue { background-color: #3b82f6; box-shadow: 0 0 5px #3b82f6; }
+
+/* BEST: Combines your custom arrow with high-contrast menu items */
+select.form-input {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='white'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 1rem center;
+    background-size: 1em;
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+select.form-input option {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+}
+/* 6. UTILITY CLASSES */
+.form-input { width: 100%; background-color: var(--primary); border: 1px solid rgba(255,255,255,0.2); border-radius: 0.5rem; padding: 0.75rem; color: var(--text-on-primary); font-size: 1rem; outline: none; margin-bottom: 0.75rem; display: block; }
+.form-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3); }
+.spinner { border: 3px solid rgba(255, 255, 255, 0.3); border-radius: 50%; border-top-color: #fff; width: 20px; height: 20px; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+canvas { touch-action: none; background: #fff; border-radius: 0.5rem; cursor: crosshair; }
+.wizard-step { display: none; flex-direction: column; }
+.wizard-step.active { display: flex; animation: slideIn 0.3s ease-out; }
+@keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+/* 7. POCKET PROTECTION/BATTERY SAVER VISUALS */
+#batterySaver { 
+    background-color: #000;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+}
+#saverProgress { background: rgba(255, 255, 255, 0.2); transition: opacity 1.5s linear; }
+
+/* 8. INSTALL OVERLAYS */
+#toastMsg { z-index: 1000; transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); transform: translateY(-150%); }
+#toastMsg.show { transform: translateY(0); }
+
+/* 9. PHASE 1 ADDITIONS */
+#offlineBanner { background: #dc2626; color: white; text-align: center; font-size: 0.75rem; font-weight: 700; padding: 0.25rem; z-index: 50; }
+#vehNagBar { background: #ea580c; color: white; text-align: center; font-size: 0.75rem; font-weight: 700; padding: 0.5rem; cursor: pointer; z-index: 40; border-bottom: 1px solid rgba(255,255,255,0.2); }
+.form-input-card { width: 100%; background-color: var(--surface); border: 1px solid rgba(255,255,255,0.15); border-radius: 0.5rem; padding: 0.75rem; color: white; font-size: 0.9rem; outline: none; margin-bottom: 0.5rem; display: block; }
+/* Theme-aware accent button — used wherever purple was previously hard-coded */
+.btn-accent { background-color: var(--accent) !important; color: white; }
+/* Travel settings toggle: colours with accent when checked */
+input[type="checkbox"]:checked ~ .travel-toggle-bg { background-color: var(--accent) !important; }
+.setting-label { display: block; font-size: 0.625rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem; margin-left: 0.25rem; }
+.lbl-blue { color: #60a5fa; }
+.lbl-red { color: #f87171; }
+.lbl-gray { color: #9ca3af; }
+
+/* Professional Input Groups & Cards */
+.input-group {
+    display: flex;
+    align-items: center;
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 0.75rem;
+    overflow: hidden;
+    height: 3.5rem;
+}
+.input-group:focus-within { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3); }
+
+.input-addon {
+    padding: 0 1rem;
+    background: rgba(255, 255, 255, 0.05);
+    color: #60a5fa;
+    font-weight: 800;
+    font-size: 0.9rem;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    text-transform: uppercase;
+    flex-shrink: 0;
+}
+.addon-prefix { border-right: 1px solid rgba(255, 255, 255, 0.1); }
+.addon-suffix { border-left: 1px solid rgba(255, 255, 255, 0.1); }
+
+.input-group .form-input { border: none !important; margin-bottom: 0 !important; background: transparent !important; flex: 1; }
+
+.check-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 1.25rem;
+    background: var(--surface);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 1rem;
+}
+    
+/* Duration slider styling */
+.slider-thumb::-webkit-slider-thumb {
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    background: var(--accent);
+    cursor: pointer;
+    border-radius: 50%;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.slider-thumb::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    background: var(--accent);
+    cursor: pointer;
+    border-radius: 50%;
+    border: none;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.slider-thumb::-webkit-slider-thumb:hover {
+    background: var(--primary);
+    transform: scale(1.1);
+}
+
+.slider-thumb::-moz-range-thumb:hover {
+    background: var(--primary);
+    transform: scale(1.1);
+}
+
+/* Panic mode styling */
+.panic-mode {
+    background: #991b1b !important;
+    animation: panic-pulse 2s infinite;
+}
+
+@keyframes panic-pulse {
+    0%, 100% { background: #991b1b; }
+    50% { background: #dc2626; }
+}
+
+/* Animated GPS pulse for active travel tracking */
+.gps-pulse {
+    animation: gps-pulse-anim 1.5s infinite ease-in-out;
+}
+
+@keyframes gps-pulse-anim {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.9); }
+}
+
+/* Emergency strobe for rescue visibility */
+.strobe-active {
+    animation: strobe-anim 0.4s infinite !important;
+}
+
+@keyframes strobe-anim {
+    0%, 49% { background-color: #991b1b !important; }
+    50%, 100% { background-color: #000000 !important; }
+}
+  /* HIGH-CONTRAST WIZARD OVERHAUL */
+#setupPage {
+    background-color: #050505 !important; /* True deep black */
+}
+
+#setupPage .form-input, 
+#setupPage .form-input-card {
+    background-color: #000000 !important;
+    border: 2px solid #ffffff !important; /* Thick white borders for clarity */
+    color: #ffffff !important;
+    font-weight: 700;
+}
+
+#setupPage .form-input::placeholder {
+    color: #9ca3af !important;
+    opacity: 1;
+}
+
+#setupPage h2 {
+    color: #60a5fa !important; /* High-visibility blue for headers */
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+#setupPage .setting-label {
+    color: #ffffff !important;
+    font-size: 0.75rem;
+    background: rgba(255,255,255,0.1);
+    padding: 2px 8px;
+    border-radius: 4px;
+    display: inline-block;
+}</style>
+</head>
+<body class="h-full overflow-hidden select-none">
+
+<!-- =========================================================
+     BOOT SCREEN — visible while config.json is being fetched.
+     Hidden by applyConfig() on success; replaced by error UI on failure.
+     This is the ONLY element visible before CONFIG is populated.
+     ========================================================= -->
+<div id="bootScreen" style="
+    position: fixed; inset: 0; z-index: 9999;
+    background: #1e3a8a;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 1.5rem; color: white; font-family: 'Inter', sans-serif;
+">
+    <div id="bootSpinner" style="
+        width: 48px; height: 48px;
+        border: 4px solid rgba(255,255,255,0.2);
+        border-top-color: #fff;
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+    "></div>
+    <div style="text-align:center; max-width: 280px;">
+        <div style="font-weight:800; font-size:1.1rem; letter-spacing:0.05em; text-transform:uppercase; margin-bottom:0.35rem;">OTG Safety</div>
+        <div id="bootStatus" style="font-size:0.78rem; opacity:0.7; font-weight:600;">Loading configuration…</div>
+    </div>
+    <div id="bootError" style="display:none; text-align:center; max-width:300px; padding:0 1.5rem;">
+        <div style="font-size:2rem; margin-bottom:0.75rem;">⚠️</div>
+        <div style="font-weight:800; font-size:1rem; margin-bottom:0.5rem;">Configuration Unavailable</div>
+        <div id="bootErrorMsg" style="font-size:0.78rem; opacity:0.75; line-height:1.5; margin-bottom:1.25rem;"></div>
+        <button onclick="location.reload()" style="
+            background:#3b82f6; color:white; border:none;
+            padding:0.75rem 1.75rem; border-radius:0.75rem;
+            font-weight:700; font-size:0.85rem; cursor:pointer;
+        ">Retry</button>
+    </div>
+</div>
+
+<div id="offlineBanner" class="hidden bg-red-600 text-white text-center text-xs font-bold py-1">
+    📡 OFFLINE MODE - Data queued for upload
+</div>
+
+<div id="vehNagBar" class="hidden bg-orange-600 text-white text-center text-xs font-bold py-2 cursor-pointer" onclick="startVehicleCheck()">
+    ⚠️ Vehicle Check Overdue - Tap to Complete
+</div>
+
+<div id="toastMsg" class="fixed top-4 left-4 right-4 bg-gray-800 border-l-4 border-blue-500 text-white px-4 py-3 rounded shadow-md transform -translate-y-full transition-transform duration-300 z-[10000]" aria-live="polite">
+  <p id="toastText" class="font-bold text-sm"></p>
+</div>
+
+<div id="batterySaver" class="fixed inset-0 bg-black z-[9999] hidden flex flex-col items-center justify-between py-16 px-10 text-white select-none"
+     ontouchstart="event.stopPropagation()" onclick="event.stopPropagation()">
+    
+    <div class="text-center space-y-4">
+    <div class="bg-blue-900/30 border border-blue-500/30 rounded-full py-1.5 px-5 mb-2 animate-pulse">
+        <p class="text-xs font-black text-blue-400 uppercase tracking-[0.25em]">
+            ⚠️ System Active: Keep App Open
+        </p>
+    </div>
+
+    <!-- Timer display - tap-to-wake removed (8d); timer was never clickable anyway -->
+    <div class="space-y-1">
+        <p id="saverTimerHUD" class="text-5xl font-mono font-bold text-gray-300">--:--</p>
+    </div>
+        
+        <div class="flex items-center justify-center gap-2 text-gray-300">
+            <span id="saverBatteryHUD" class="text-xs font-black">--%</span>
+            <div class="w-8 h-4 border border-gray-800 rounded-sm relative">
+                <div id="saverBatteryBarHUD" class="absolute inset-y-0 left-0 bg-gray-700" style="width: 0%"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="w-full max-w-xs space-y-8">
+        <div id="wakeSlidePill" class="relative bg-gray-900/40 h-16 rounded-full p-1 border border-gray-800 flex items-center overflow-hidden shadow-inner">
+            <input type="range" id="wakeSlider" min="0" max="100" value="0" 
+                   class="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10">
+            
+            <div id="sliderThumb" class="w-14 h-14 bg-white rounded-full flex items-center justify-center shadow-2xl transition-all duration-75 pointer-events-none z-20">
+                 <svg class="w-6 h-6 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M9 5l7 7-7 7"/>
+                </svg>
+            </div>
+            
+            <div class="w-full flex justify-center">
+                <span class="text-sm font-black text-gray-400 uppercase tracking-[0.3em] transition-opacity duration-200" id="slideLabel">Slide to Wake</span>
+            </div>
+        </div>
+
+        <!-- 8c: Shake message replaces old SOS pill, keeping the red pill styling -->
+        <div class="text-center">
+            <div class="inline-flex items-center gap-2 bg-red-900/10 border border-red-900/30 rounded-full px-5 py-2">
+                <span class="text-red-600 text-lg">🆘</span>
+                <span class="text-red-700 text-sm font-black uppercase tracking-widest">Shake vigorously for SOS</span>
+            </div>
+        </div>
+    </div>
+</div>
+    
+<div id="pageContainer">
+<div id="setupPage" class="page">
+    <div class="header-bar">
+        <h1 class="text-xl font-bold text-blue-400">Setup Wizard</h1>
+        <div class="flex gap-1">
+            <div id="dot1" class="w-2 h-2 rounded-full bg-blue-500"></div>
+            <div id="dot2" class="w-2 h-2 rounded-full bg-gray-700"></div>
+            <div id="dot3" class="w-2 h-2 rounded-full bg-gray-700"></div>
+        </div>
+    </div>
+   
+    <div class="content-area flex flex-col">
+        <div id="wizStep1" class="wizard-step active">
+            <h2 class="text-lg font-bold mb-4">Your Identity</h2>
+            <input id="wizName" type="text" placeholder="Full Name" class="form-input">
+            <input id="wizPhone" type="tel" placeholder="Phone Number" class="form-input">
+            <input id="wizEmail" type="email" placeholder="Email Address" class="form-input">
+        </div>
+        
+<div id="wizStep2" class="wizard-step space-y-6">
+            <div class="space-y-4">
+                <h2 class="text-base font-extrabold text-white uppercase tracking-widest">Safety & Duress PINs</h2>
+
+                <div class="space-y-5 text-sm text-gray-200 leading-relaxed">
+                    <p>
+                        <strong class="text-blue-400 uppercase">Standard Safety PIN:</strong> This code is used exclusively to declare yourself safe <span class="font-black underline text-white">AFTER</span> an alarm has been activated. Entering this PIN is the only way to confirm to the system that you are secure and to stop the alert from escalating.
+                    </p>
+
+                    <!-- Safety PIN + Confirm -->
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="flex flex-col gap-1">
+                            <label class="text-sm text-blue-400 font-black uppercase tracking-widest ml-1">Safety PIN</label>
+                            <input id="wizPin" type="tel" maxlength="4" placeholder="••••"
+                                   oninput="state.pins.std = this.value; saveState(); checkWizPinMatch()"
+                                   class="w-full bg-white/10 border-2 border-white/10 rounded-2xl p-4 text-center text-3xl font-mono text-white tracking-[0.5em] focus:border-blue-500 outline-none transition-all">
+                        </div>
+                        <div class="flex flex-col gap-1">
+                            <label class="text-sm text-blue-400 font-black uppercase tracking-widest ml-1">Confirm PIN</label>
+                            <input id="wizPinConfirm" type="tel" maxlength="4" placeholder="••••"
+                                   oninput="checkWizPinMatch()"
+                                   class="w-full bg-white/10 border-2 border-white/10 rounded-2xl p-4 text-center text-3xl font-mono text-white tracking-[0.5em] focus:border-blue-500 outline-none transition-all">
+                        </div>
+                    </div>
+
+                    <div class="border-t border-white/5 pt-4 mt-2">
+                        <p>
+                            <strong class="text-purple-400 uppercase">Silent Duress PIN:</strong> This is used to silently declare yourself <span class="font-black underline text-white uppercase">UNSAFE</span> when you are required to clear an alarm under threat. The app will appear to clear the alarm normally, but it will <span class="font-black uppercase text-purple-300">immediately and silently</span> notify your contacts that you require help.
+                        </p>
+
+                        <!-- Duress PIN + Confirm -->
+                        <div class="grid grid-cols-2 gap-3 mt-4">
+                            <div class="flex flex-col gap-1">
+                                <label class="text-sm text-purple-400 font-black uppercase tracking-widest ml-1">Duress PIN</label>
+                                <input id="wizDuress" type="tel" maxlength="4" placeholder="••••"
+                                       oninput="state.pins.duress = this.value; saveState(); checkWizPinMatch()"
+                                       class="w-full bg-white/10 border-2 border-white/10 rounded-2xl p-4 text-center text-3xl font-mono text-purple-400 tracking-[0.5em] focus:border-purple-500 outline-none transition-all">
+                            </div>
+                            <div class="flex flex-col gap-1">
+                                <label class="text-sm text-purple-400 font-black uppercase tracking-widest ml-1">Confirm PIN</label>
+                                <input id="wizDuressConfirm" type="tel" maxlength="4" placeholder="••••"
+                                       oninput="checkWizPinMatch()"
+                                       class="w-full bg-white/10 border-2 border-white/10 rounded-2xl p-4 text-center text-3xl font-mono text-purple-400 tracking-[0.5em] focus:border-purple-500 outline-none transition-all">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Validation feedback -->
+                    <div id="pinMatchError" class="hidden bg-red-900/40 border border-red-500/50 rounded-xl px-4 py-3 text-sm font-bold text-red-300"></div>
+                    <div id="pinMatchOk" class="hidden bg-green-900/40 border border-green-500/50 rounded-xl px-4 py-3 text-sm font-bold text-green-300">✅ PINs confirmed — tap Next to continue.</div>
+                </div>
+            </div>
+        </div>
+
+<div id="wizStep3" class="wizard-step space-y-6">
+            <div class="space-y-4">
+                <h2 class="text-lg font-bold text-white mb-4 uppercase tracking-widest">Response Hierarchy</h2>
+                
+                <div class="space-y-5 text-sm text-gray-200 leading-relaxed">
+                    <p>
+                        <strong class="text-blue-400 uppercase text-xs font-black">Primary Contact:</strong> Your first line of support.
+                    </p>
+                    <div class="space-y-2 mb-6">
+                        <input id="wizContactName" type="text" placeholder="Primary Contact Name" 
+                               autocomplete="name"
+                               oninput="state.worker.iceName = this.value; saveState()" 
+                               class="w-full bg-white/10 border border-white/10 rounded-xl p-4 text-white outline-none focus:border-blue-500 transition-all">
+                        
+                        <div class="grid grid-cols-2 gap-2">
+                            <input id="wizContactPhone" type="tel" placeholder="Phone Number" 
+                                   autocomplete="tel"
+                                   oninput="state.worker.icePhone = this.value; saveState()" 
+                                   class="bg-white/10 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-blue-500 transition-all">
+                            
+                            <input id="wizContactEmail" type="email" placeholder="Email Address" 
+                                   autocomplete="email"
+                                   oninput="state.worker.iceEmail = this.value; saveState()" 
+                                   class="bg-white/10 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-blue-500 transition-all">
+                        </div>
+                        <input id="wizContactNtfy" type="text" placeholder="ntfy topic (optional — for push alerts)" 
+                               autocomplete="off" autocorrect="off" spellcheck="false"
+                               oninput="state.worker.emgNtfy = this.value; saveState()" 
+                               class="w-full bg-white/10 border border-white/10 rounded-xl p-3 text-white text-sm outline-none focus:border-teal-500 transition-all font-mono">
+                        <p class="text-xs text-teal-300/70 -mt-1 leading-relaxed">Ask your contact to install the <strong>ntfy app</strong>, create a private topic, and share the topic name with you. They'll get an instant push notification when any alarm fires.</p>
+                    </div>
+
+                    <div class="bg-blue-900/20 border border-blue-500/20 p-4 rounded-2xl space-y-3">
+                        <p>
+                            <strong class="text-orange-400 uppercase text-xs font-black">Escalation Contact (Optional):</strong> Alerts this person if the Primary Contact doesn't acknowledge within 1 hour.
+                        </p>
+                    </div>
+
+                    <div class="space-y-2 mt-4">
+                        <input id="wizEscName" type="text" placeholder="Escalation Name" 
+                               autocomplete="name"
+                               oninput="state.worker.ice2Name = this.value; saveState()" 
+                               class="w-full bg-white/10 border border-white/10 rounded-xl p-4 text-white outline-none focus:border-orange-500 transition-all">
+                        
+                        <div class="grid grid-cols-2 gap-2">
+                            <input id="wizEscPhone" type="tel" placeholder="Phone" 
+                                   autocomplete="tel"
+                                   oninput="state.worker.ice2Phone = this.value; saveState()" 
+                                   class="bg-white/10 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-orange-500 transition-all">
+                            
+                            <input id="wizEscEmail" type="email" placeholder="Email" 
+                                   autocomplete="email"
+                                   oninput="state.worker.ice2Email = this.value; saveState()" 
+                                   class="bg-white/10 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-orange-500 transition-all">
+                        </div>
+                        <input id="wizEscNtfy" type="text" placeholder="ntfy topic (optional)" 
+                               autocomplete="off" autocorrect="off" spellcheck="false"
+                               oninput="state.worker.escNtfy = this.value; saveState()" 
+                               class="w-full bg-white/10 border border-white/10 rounded-xl p-3 text-white text-sm outline-none focus:border-teal-500 transition-all font-mono">
+                    </div>
+                </div>
+            </div>
+
+            </div> <div class="footer-bar flex justify-between p-6 border-t border-white/10 bg-black/20">
+            <button id="btnWizPrev" onclick="prevWiz()" 
+                    class="hidden px-8 py-4 bg-gray-700 rounded-xl font-bold text-white active:scale-95 transition-all">
+                Back
+            </button>
+            <div class="flex-1"></div>
+            <button id="btnWizNext" onclick="nextWiz()" 
+                    class="px-8 py-4 bg-blue-600 rounded-xl font-bold text-white active:scale-95 transition-all shadow-lg">
+                Next Step
+            </button>
+        </div>
+    </div> </div>
+<div id="mainPage" class="page">
+<div class="header-bar">
+    <div class="flex items-center gap-3">
+        <img id="headerLogo" src="./icon.png" class="w-10 h-10 rounded-lg object-contain shadow-sm" alt="Logo">
+        <h1 class="text-xs font-black uppercase tracking-wider leading-tight" style="color: var(--text-on-primary)">
+            <span id="headerOrgName">OTG</span><br><span class="italic" style="color: var(--accent)">Safety App</span>
+        </h1>
+    </div>
+    <div class="flex gap-4 items-center"> 
+        <button onclick="openResourceHub()" 
+                class="text-2xl opacity-60 hover:opacity-100 transition active:scale-90" 
+                title="Resource Library" 
+                aria-label="Resource Library">
+            📖
+        </button>
+     <div class="flex flex-col items-center">
+            <div id="gpsIndicator" class="flex gap-1 items-end h-5"> 
+                <div class="gps-bar" style="height:6px"></div>
+                <div class="gps-bar" style="height:9px"></div>
+                <div class="gps-bar" style="height:12px"></div>
+      </div>
+    <span id="gpsLabel" class="text-sm text-gray-300 font-bold mt-0.5">--</span>
+</div>
+        <button onclick="navigate('settings')" 
+                class="text-2xl text-gray-400 hover:text-white transition active:rotate-45" 
+                aria-label="Settings">
+            ⚙️
+        </button>
+    </div>
+</div>
+    
+    <!-- Sync Banner -->
+    <div id="uploadBanner" class="hidden mb-2 bg-blue-900/50 text-blue-200 text-xs p-2 rounded flex items-center justify-center gap-2 font-bold uppercase tracking-widest mx-4 mt-4">
+        <div class="spinner"></div>
+        <span>Syncing...</span>
+    </div>
+    
+    <div class="content-area">
+<div class="flex flex-col gap-1 mb-4">
+    <div class="flex gap-2">
+        <button onclick="forceSync(true)" id="btnSync" class="w-14 h-14 bg-gray-800 border border-gray-600 rounded-xl flex items-center justify-center text-blue-400 text-2xl shadow-lg active:scale-95 transition" title="Sync Database">
+            ↻
+        </button>
+        <button onclick="openAddLocationModal()" class="w-14 h-14 bg-gray-800 border border-gray-600 rounded-xl flex items-center justify-center text-green-400 text-2xl shadow-lg active:scale-95 transition" title="Add Destination">
+            +
+        </button>
+        <div id="travelRow" class="flex-1"></div>
+    </div>
+    <div id="lastSyncLabel" class="text-sm text-gray-300 font-bold uppercase tracking-tighter ml-1">
+        Last Sync: Never
+    </div>
+</div>
+        <!-- Regular locations (grid) -->
+        <div id="locationList" class="grid grid-cols-2 gap-3"></div>
+    </div>
+    <div class="footer-bar">
+        <!-- Critical Timing Mode Toggle -->
+        <div class="flex justify-end items-center gap-2 mb-2">
+            <span class="text-sm font-bold text-gray-300 tracking-widest" id="lblHighRisk">Critical timing mode</span>
+            <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="chkHighRisk" class="sr-only peer" onchange="toggleHighRiskUI()">
+                <div class="w-9 h-5 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-600"></div>
+            </label>
+        </div>
+        
+<!-- Welfare Check Interval Selector — only shown when checkinEnabled is true -->
+<div id="welfareIntervalRow" class="hidden mb-3 bg-gray-800 rounded-lg px-3 py-2 border border-teal-900/50">
+    <div class="flex justify-between items-center mb-2">
+        <span class="text-teal-400 text-xs font-black uppercase tracking-widest">🔔 Welfare Check Interval</span>
+        <span id="welfareIntervalHint" class="text-xs text-gray-500 font-bold italic"></span>
+    </div>
+    <div class="grid grid-cols-5 gap-1.5">
+        <button onclick="setVisitWelfare(10)"  class="welfare-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">10m</button>
+        <button onclick="setVisitWelfare(15)"  class="welfare-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">15m</button>
+        <button onclick="setVisitWelfare(30)"  class="welfare-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">30m</button>
+        <button onclick="setVisitWelfare(60)"  class="welfare-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">1 hr</button>
+        <button onclick="setVisitWelfare(120)" class="welfare-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">2 hr</button>
+    </div>
+</div>
+
+<!-- Duration Selector -->
+<div class="mb-4 bg-gray-800 rounded-lg p-3 border border-gray-700">
+    <div class="flex justify-between items-center mb-3">
+        <span class="text-gray-400 text-xs font-black">Expected Duration</span>
+        <div id="durationDisplay" class="text-right">
+            <span class="text-blue-400 font-black text-sm">10 min</span>
+        </div>
+    </div>
+
+    <!-- Quick presets ABOVE slider -->
+    <div class="grid grid-cols-4 gap-1.5 mb-3">
+        <button onclick="setQuickDuration(15)"  class="dur-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">15m</button>
+        <button onclick="setQuickDuration(30)"  class="dur-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">30m</button>
+        <button onclick="setQuickDuration(45)"  class="dur-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">45m</button>
+        <button onclick="setQuickDuration(60)"  class="dur-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">1 hr</button>
+        <button onclick="setQuickDuration(90)"  class="dur-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">1½ hr</button>
+        <button onclick="setQuickDuration(120)" class="dur-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">2 hr</button>
+        <button onclick="setQuickDuration(180)" class="dur-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">3 hr</button>
+        <button onclick="setQuickDuration(240)" class="dur-btn py-1.5 rounded text-xs font-black border border-gray-600 bg-gray-700/50 text-gray-400">4 hr</button>
+    </div>
+
+    <!-- Fine-tune slider -->
+    <input id="durationSlider" type="range" min="0" max="30" value="0" 
+           class="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer slider-thumb" 
+           oninput="updateDurationDisplay()">
+    <div class="flex justify-between mt-1">
+        <span class="text-xs text-gray-400">10 min <span class="text-blue-500 font-black">MIN</span></span>
+        <span class="text-xs text-gray-400">8 hr</span>
+    </div>
+</div>
+        
+        <!-- Forms Button + Hold to Start Button -->
+<div class="flex gap-3 h-16 items-stretch">
+    <button id="btnForms" onclick="openFormsLibrary()" 
+            class="w-1/4 bg-indigo-950 text-indigo-300 font-black rounded-2xl border border-indigo-700/50 shadow-lg active:scale-95 transition text-xs uppercase tracking-tighter leading-none">
+        Forms
+    </button>
+    <button type="button" id="btnStart" 
+            class="long-press-btn flex-1 bg-gray-700 text-gray-300 font-black rounded-2xl text-xl shadow-lg transition-all" 
+            disabled>
+        <span class="relative z-10">Hold to Start</span>
+    </button>
+</div>
+    </div>
+</div>
+
+<div id="lockedPage" class="page">
+    <div id="lockedContent" class="flex-1 flex flex-col justify-between p-6">
+        <div class="flex justify-end items-start">
+        <button id="btnPanic" 
+                onclick="triggerPanic()"
+                class="w-24 h-24 bg-red-600 rounded-full font-black text-white text-2xl border-4 border-red-800 shadow-2xl active:scale-95 transition flex items-center justify-center" 
+                aria-label="Emergency panic button">
+            SOS
+        </button>
+</div>
+
+        <div class="text-center">
+            <p class="text-gray-400 text-sm uppercase font-black tracking-[0.2em]">Currently Active At</p>
+            <div class="flex items-center justify-center gap-2 mt-1 mb-2 cursor-pointer hover:bg-gray-800 rounded p-2 transition" onclick="showCurrentSiteInfo()">
+                <h2 id="lockedLocationName" class="text-3xl font-bold text-white truncate max-w-[250px]"></h2>
+                <span class="text-blue-400 text-xl">ℹ️</span>
+            </div>
+            <div id="highRiskBadge" class="hidden text-red-500 font-black text-xs uppercase tracking-widest border border-red-500 inline-block px-3 py-1 rounded-lg mb-2">
+                ⚡ CRITICAL TIMING MODE
+            </div>
+            <div id="welfareBadge" class="hidden text-teal-400 font-black text-xs uppercase tracking-widest border border-teal-700 inline-block px-3 py-1 rounded-lg mb-2">
+                🔔 Welfare every <span id="welfareBadgeMins"></span>
+            </div>
+            <div id="overdueLabel" class="hidden text-red-500 font-black text-2xl animate-pulse my-2 tracking-[0.2em] border-2 border-red-500 inline-block px-6 py-2 rounded-xl uppercase">
+                OVERDUE
+            </div>
+            <div id="countdownTimer" class="text-8xl font-bold font-mono text-white tracking-tighter">00:00</div>
+            <!-- GPS accuracy warning — shown only when accuracy > 100m. Tappable for explanation. -->
+            <div id="gpsAccuracyBadge"
+                 class="hidden mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-900/60 border border-amber-600/60 cursor-pointer"
+                 onclick="showToast('Poor GPS signal — location may be inaccurate. Try moving closer to a window or outdoors.')">
+                <span class="text-amber-400 text-xs">📍</span>
+                <span class="text-amber-400 text-xs font-bold uppercase tracking-widest">GPS ±<span id="gpsAccuracyValue">?</span>m</span>
+            </div>
+            <p class="text-gray-400 mt-2 font-bold uppercase text-[12px] tracking-widest">
+                Scheduled Departure: <span id="lockedAnticipatedTime" class="text-blue-400"></span>
+            </p>
+        </div>
+
+        <div class="flex flex-col gap-3">
+            <div class="flex gap-3 h-16">
+                <button id="btnExtend" onclick="showModal('extend')" class="flex-1 bg-blue-600 text-white font-black rounded-2xl text-lg shadow-lg">
+                    Extend
+                </button>
+                <button onclick="openFormsLibrary()" class="w-24 bg-violet-950 text-violet-300 font-black rounded-2xl border border-violet-800/50 flex flex-col items-center justify-center">
+                    <span class="text-lg">📋</span>
+                    <span class="text-xs uppercase tracking-tighter">Forms</span>
+                </button>
+            </div>
+
+            <button id="btnDepart" class="long-press-btn w-full py-5 bg-red-600 hover:bg-red-500 text-white font-black rounded-2xl text-xl shadow-2xl">
+                Hold to End
+            </button>
+            
+            <button id="btnSafe" class="hidden long-press-btn w-full py-5 bg-green-600 hover:bg-green-500 text-white font-black rounded-2xl text-xl shadow-2xl animate-pulse">
+                I Am Safe
+            </button>
+
+            <!-- REDUNDANT ESCALATION: Direct mailto fallback shown when alarm fires.
+                 Completely independent of the backend — uses the device's native mail
+                 client. Visible to worker or any bystander. Hidden until alarm fires. -->
+            <button id="btnDirectAlert"
+                    class="hidden w-full py-4 bg-amber-600 hover:bg-amber-500 text-white font-black rounded-2xl shadow-2xl flex flex-col items-center justify-center"
+                    onclick="sendDirectAlert()">
+                <span class="text-base uppercase tracking-widest">📧 Send Emergency Email Direct</span>
+                <span class="text-xs font-normal opacity-80 mt-0.5">Backup — bypasses app, opens your email</span>
+            </button>
+
+            <!-- Quick-call to ICE contact — shown alongside direct email on alarm.
+                 One tap opens native dialler pre-filled. Useful for bystanders. -->
+            <button id="btnCallICE"
+                    class="hidden w-full py-4 bg-blue-700 hover:bg-blue-600 text-white font-black rounded-2xl shadow-2xl flex flex-col items-center justify-center"
+                    onclick="callICE()">
+                <span class="text-base uppercase tracking-widest">📞 Call Emergency Contact</span>
+                <span id="btnCallICELabel" class="text-xs font-normal opacity-80 mt-0.5"></span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<div id="reportPage" class="page">
+    <div class="header-bar">
+        <h1 id="reportTitle" class="text-xl font-bold">Visit Report</h1>
+        <button onclick="navigate(state.activeVisit ? 'locked' : 'main')" class="text-3xl text-gray-400 hover:text-white px-2">×</button>
+    </div>
+    <div class="content-area">
+        <div id="reportFields"></div>
+    </div>
+    <div class="footer-bar flex gap-3">
+        <button onclick="navigate(state.activeVisit ? 'locked' : 'main')" 
+                class="flex-1 py-4 bg-gray-700 text-gray-300 rounded-xl font-bold uppercase tracking-widest">
+            Cancel
+        </button>
+        <button id="btnSubmitRep" class="flex-[2] py-4 bg-green-600 text-white rounded-xl font-bold shadow-lg">
+            Submit Report
+        </button>
+    </div>
+</div>
+
+<!-- Settings Page -->
+<div id="settingsPage" class="page bg-gray-800">
+    <div class="header-bar">
+        <h1 class="text-2xl font-bold" style="color: var(--text-on-primary)">Settings</h1>
+        <button onclick="navigate('main')" class="text-3xl text-gray-400 hover:text-white px-2">×</button>
+    </div>
+    <div class="content-area pb-24">
+        <!-- Restart Wizard Prompt -->
+        <div class="bg-blue-900/30 border border-blue-500/30 p-3 rounded mb-4">
+            <p class="text-xs text-blue-200 font-bold">Re-run the setup wizard to change details?</p>
+            <button onclick="startWizard()" class="mt-2 text-xs bg-blue-600 px-2 py-1 rounded font-bold">Restart Wizard</button>
+        </div>
+        
+        <div class="mb-6">
+            <h2 class="text-xl font-bold text-blue-400 mb-4">Worker Profile</h2>
+            <label class="setting-label lbl-blue">Full Name</label>
+            <input id="setName" type="text" class="form-input">
+            <label class="setting-label lbl-blue">Mobile Number</label>
+            <input id="setPhone" type="tel" class="form-input">
+            <label class="setting-label lbl-blue">Work Email</label>
+            <input id="setEmail" type="email" class="form-input">
+        </div>
+        <div class="mb-6">
+            <h2 class="text-xl font-bold text-red-400 mb-4">Emergency Contacts</h2>
+            <label class="setting-label lbl-red">Primary Emergency Contact</label>
+            <input id="setEmgName" type="text" class="form-input-card">
+            <input id="setEmgPhone" type="tel" class="form-input-card">
+            <input id="setEmgEmail" type="email" class="form-input-card">
+            <input id="setEmgNtfy" type="text" placeholder="ntfy topic (optional push alerts)" autocomplete="off" autocorrect="off" spellcheck="false" class="form-input mb-4 font-mono text-sm">
+            <label class="setting-label lbl-gray">Escalation Contact</label>
+            <input id="setEscName" type="text" class="form-input-card">
+            <input id="setEscPhone" type="tel" class="form-input-card">
+            <input id="setEscEmail" type="email" class="form-input-card">
+            <input id="setEscNtfy" type="text" placeholder="ntfy topic (optional push alerts)" autocomplete="off" autocorrect="off" spellcheck="false" class="form-input font-mono text-sm">
+        </div>
+        <div class="mb-6">
+            <h2 class="text-xl font-bold text-purple-400 mb-4">Advanced</h2>
+            <div class="bg-gray-900 p-4 rounded-xl mb-4">
+                <label class="flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" id="setAdvanced" onchange="toggleAdvancedGPS(this.checked)" class="w-6 h-6 rounded text-blue-600">
+                    <div>
+                        <div class="text-white font-bold">Advanced GPS Monitoring</div>
+                        <div class="text-xs text-gray-400">Continuous tracking (higher battery use)</div>
+                    </div>
+                </label>
+            </div>
+        </div>
+        
+        <!-- Personal Sites Transfer -->
+        <div class="mb-6">
+            <h2 class="text-xl font-bold text-green-400 mb-1">My Sites</h2>
+            <p class="text-xs text-gray-300 font-bold mb-4">Transfer personal sites you've added manually to a new device.</p>
+            <div id="mySitesSummary" class="text-xs text-gray-400 font-bold mb-3"></div>
+            <div class="flex gap-2">
+                <button onclick="exportMySites()"
+                        class="flex-1 bg-green-700 hover:bg-green-600 text-white py-3 rounded-xl text-xs font-black uppercase tracking-wide shadow">
+                    📤 Export My Sites
+                </button>
+                <button onclick="showModal('importSites')"
+                        class="flex-1 bg-blue-700 hover:bg-blue-600 text-white py-3 rounded-xl text-xs font-black uppercase tracking-wide shadow">
+                    📥 Import Sites
+                </button>
+            </div>
+        </div>
+
+        <!-- System Info Section -->
+        <div class="mb-6">
+            <h2 class="text-xl font-bold text-gray-400 mb-4">System Info</h2>
+            <div class="setting-card border-gray-600">
+                <label class="setting-label lbl-gray">Backend Connection</label>
+                <input id="setBackendUrl" disabled class="form-input-card text-xs font-mono text-gray-400 mb-2" value="">
+                <div class="flex gap-2 mb-3">
+                    <div class="flex-1">
+                        <div class="text-sm text-gray-300 uppercase font-bold mb-1">App Version</div>
+                        <div id="appVersion" class="text-sm font-mono text-blue-400">—</div>
+                    </div>
+                    <div class="flex-1">
+                        <div class="text-sm text-gray-300 uppercase font-bold mb-1">Backend Version</div>
+                        <div id="backendVersion" class="text-sm font-mono text-green-400">...</div>
+                    </div>
+                    <div class="flex-1">
+                        <div class="text-sm text-gray-300 uppercase font-bold mb-1">Sync Status</div>
+                        <div id="syncStatus" class="text-sm font-mono text-gray-400">Checking...</div>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="forceSync(true)" class="flex-1 bg-gray-700 hover:bg-gray-600 py-2 rounded text-xs font-bold text-white uppercase">Force Sync</button>
+                    <button onclick="clearFormsCache()" class="flex-1 bg-gray-700 hover:bg-gray-600 py-2 rounded text-xs font-bold text-white uppercase">Clear Cache</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Outbox Diagnostic Panel -->
+        <div class="mb-6">
+            <h2 class="text-xl font-bold text-gray-400 mb-4">Event Outbox</h2>
+            <div class="setting-card border-gray-600">
+                <!-- Summary row -->
+                <div class="flex gap-2 mb-3">
+                    <div class="flex-1 text-center">
+                        <div class="text-xs text-gray-400 uppercase font-bold mb-1">Pending</div>
+                        <div id="outboxPending" class="text-xl font-black text-yellow-400">–</div>
+                    </div>
+                    <div class="flex-1 text-center">
+                        <div class="text-xs text-gray-400 uppercase font-bold mb-1">Sent</div>
+                        <div id="outboxSent" class="text-xl font-black text-green-400">–</div>
+                    </div>
+                    <div class="flex-1 text-center">
+                        <div class="text-xs text-gray-400 uppercase font-bold mb-1">Last Sent</div>
+                        <div id="outboxLastSent" class="text-xs font-mono text-gray-300">–</div>
+                    </div>
+                </div>
+                <!-- Recent events list -->
+                <div id="outboxHistory" class="text-xs font-mono text-gray-400 max-h-36 overflow-y-auto space-y-1 mb-3 bg-gray-900/50 rounded-lg p-2">
+                    <div class="text-gray-600 text-center py-2">Loading…</div>
+                </div>
+                <button onclick="outboxProcess(); showToast('🔄 Flushing outbox…')"
+                        class="w-full bg-gray-700 hover:bg-gray-600 py-2 rounded text-xs font-bold text-white uppercase">
+                    Flush Outbox Now
+                </button>
+            </div>
+        </div>
+
+        <!-- Contact Test Alert -->
+        <div class="mb-6">
+            <h2 class="text-xl font-bold text-gray-400 mb-4">Contact Verification</h2>
+            <div class="setting-card border-gray-600">
+                <p class="text-xs text-gray-300 mb-3 leading-relaxed">Send a real test alert to your configured emergency contacts to verify their email addresses are correct and alerts are being delivered.</p>
+                <div id="testAlertResult" class="hidden text-xs font-bold rounded-lg px-3 py-2 mb-3"></div>
+                <button onclick="sendTestAlert()"
+                        class="w-full bg-blue-700 hover:bg-blue-600 py-3 rounded-lg text-sm font-black text-white uppercase tracking-widest">
+                    📧 Send Test Alert to Contacts
+                </button>
+            </div>
+        </div>
+
+        <div class="space-y-3">
+            <button onclick="saveSettings()" class="w-full py-4 bg-green-600 hover:bg-green-500 text-white font-bold rounded-xl shadow-lg">
+                💾 Save Settings
+            </button>
+            <button onclick="clearData()" class="w-full py-4 bg-red-900/50 text-red-400 hover:bg-red-900/70 font-bold rounded-xl shadow-lg">
+                Reset App Data
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Extend Modal -->
+<div id="extendModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70" role="dialog" aria-modal="true">
+    <div class="bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center border border-gray-700">
+        <h2 class="text-xl font-black mb-6 text-white uppercase tracking-widest">Extend Visit</h2>
+        <div class="grid grid-cols-3 gap-3 mb-8">
+            <button onclick="confirmExtension(10)" class="py-5 bg-blue-600 hover:bg-blue-500 rounded-xl font-black text-white shadow-lg">+10</button>
+            <button onclick="confirmExtension(15)" class="py-5 bg-blue-600 hover:bg-blue-500 rounded-xl font-black text-white shadow-lg">+15</button>
+            <button onclick="confirmExtension(30)" class="py-5 bg-blue-600 hover:bg-blue-500 rounded-xl font-black text-white shadow-lg">+30</button>
+        </div>
+        <button onclick="closeModal('extend')" class="w-full py-4 bg-gray-700 rounded-xl font-black text-gray-400">Cancel</button>
+    </div>
+</div>
+</div><!-- /#pageContainer -->
+
+<!-- Vehicle WOF Block Modal -->
+<div id="wofBlockModal" class="hidden fixed inset-0 z-[450] flex items-center justify-center bg-black/70" role="dialog" aria-modal="true">
+    <div class="bg-gray-900 rounded-3xl shadow-2xl w-full max-w-sm p-10 text-center border-4 border-red-600">
+        <div class="text-7xl mb-6">⛔</div>
+        <h2 class="text-3xl font-black text-red-500 mb-4 uppercase">Vehicle Grounded</h2>
+        <p class="text-lg text-white font-bold mb-4">Your WOF has expired. You must not use your vehicle for work travel until it is renewed.</p>
+        <p class="text-sm text-gray-400 font-bold mb-8">Once renewed, submit a <span class="text-orange-400">Vehicle Safety Check</span> form to update your records and restore travel access.</p>
+        <button onclick="closeWofBlocker()" class="w-full py-5 bg-red-600 text-white font-black rounded-2xl text-xl shadow-2xl">Understood</button>
+    </div>
+</div>
+
+<!-- Vehicle WOF Warning Modal -->
+<!-- data-mode="load" = on-open reminder (dismiss only) -->
+<!-- data-mode="visit" = pre-travel gate (checkbox + Continue resumes startVisit) -->
+<div id="wofWarnModal" data-mode="load" class="hidden fixed inset-0 z-[450] flex items-center justify-center bg-black/70" role="dialog" aria-modal="true">
+    <div class="bg-gray-900 rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center border-4 border-orange-500">
+        <div class="text-6xl mb-4">⚠️</div>
+        <h2 class="text-2xl font-black text-orange-500 mb-3">WOF Expiry Reminder</h2>
+        <p class="text-white font-bold mb-2">Your vehicle WOF expires in:</p>
+        <p id="wofWarnText" class="text-3xl text-orange-400 font-black mb-4"></p>
+        <p class="text-sm text-gray-400 font-bold mb-6">Please book a WOF renewal. Once done, submit a <span class="text-orange-400">Vehicle Safety Check</span> form to update your records.</p>
+        <!-- Visit-gate section: shown only when opening from pre-travel check -->
+        <div id="wofWarnVisitSection" class="hidden bg-gray-800 p-4 rounded-2xl border border-gray-700 text-left mb-4">
+            <label class="flex items-start gap-3 cursor-pointer">
+                <input type="checkbox" id="chkWofAck" class="mt-1 w-6 h-6 rounded text-blue-600" onchange="toggleWofContinue()">
+                <span class="text-sm text-gray-300 font-bold">I confirm the WOF is still valid for this trip and the vehicle is safe to operate.</span>
+            </label>
+        </div>
+        <button id="btnWofContinue" disabled onclick="closeWofWarn()" class="hidden w-full py-4 bg-gray-700 text-gray-300 font-black rounded-2xl text-lg transition-all mb-3">Continue to Travel</button>
+        <button id="btnWofDismiss" onclick="closeWofWarn()" class="w-full py-4 bg-gray-700 text-gray-300 font-black rounded-2xl text-lg">Got it</button>
+    </div>
+</div>
+
+<!-- Personal Sites Import Modal -->
+<div id="importSitesModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" role="dialog" aria-modal="true">
+    <div class="bg-gray-900 rounded-2xl shadow-2xl w-full max-w-sm p-6 border border-gray-700">
+        <h2 class="text-xl font-black text-white mb-1 uppercase tracking-widest">Import My Sites</h2>
+        <p class="text-xs text-gray-400 font-bold mb-4">Paste the export code from your old device below.</p>
+        <textarea id="importSitesPayload"
+                  class="w-full h-32 bg-gray-800 border border-gray-600 text-white text-xs font-mono rounded-xl p-3 resize-none focus:border-blue-500 focus:outline-none"
+                  placeholder="Paste your export code here..."></textarea>
+        <div id="importSitesError" class="hidden mt-2 text-xs text-red-400 font-bold"></div>
+        <div class="flex gap-3 mt-4">
+            <button onclick="closeModal('importSites')"
+                    class="flex-1 bg-gray-700 text-gray-300 font-black py-3 rounded-xl text-sm">Cancel</button>
+            <button onclick="importMySites()"
+                    class="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-black py-3 rounded-xl text-sm shadow-lg">Import</button>
+        </div>
+    </div>
+</div>
+
+<!-- Site Info Modal (Phase 2, Feature 9) -->
+<div id="infoModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70" role="dialog" aria-modal="true">
+    <div class="bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto border border-gray-700">
+        <h2 class="text-2xl font-black text-white mb-4">Site Info</h2>
+        <div id="siteInfoContent" class="text-gray-300 text-sm space-y-3 mb-6"></div>
+        <div class="flex gap-3 mb-4">
+            <a id="btnSiteCall" href="#" class="hidden flex-1 bg-green-600 text-white py-4 rounded-xl text-center font-black">📞 Call</a>
+            <a id="btnSiteEmail" href="#" class="hidden flex-1 bg-blue-600 text-white py-4 rounded-xl text-center font-black">✉️ Email</a>
+        </div>
+        <a id="btnSiteNav" href="#" target="_blank" class="hidden block w-full py-4 btn-accent font-black rounded-xl text-center mb-4">🗺️ Navigate</a>
+        <button onclick="closeModal('info')" class="w-full py-4 bg-gray-700 text-gray-300 font-black rounded-xl">Close</button>
+    </div>
+</div>
+
+<!-- Travel Settings Modal -->
+<div id="travelSettingsModal" class="hidden fixed inset-0 z-[460] flex items-center justify-center bg-black/80 backdrop-blur-sm" role="dialog" aria-modal="true">
+    <div class="bg-gray-900 rounded-3xl shadow-2xl w-full max-w-sm p-8 border-t-[8px] mx-4" style="border-top-color: var(--accent)">
+        <div class="flex items-center gap-3 mb-6">
+            <span class="text-3xl">🚗</span>
+            <div>
+                <h2 class="text-xl font-black text-white">Travel Settings</h2>
+                <p class="text-xs text-gray-300 font-bold">This trip only &mdash; resets after each journey</p>
+            </div>
+        </div>
+        <div class="bg-gray-800 rounded-2xl p-4 mb-6 border border-gray-700">
+            <label class="flex items-center justify-between cursor-pointer gap-4">
+                <div>
+                    <div class="text-sm font-black text-white">Personal Travel &ndash; No Report</div>
+                    <div class="text-xs text-gray-400 font-bold mt-0.5">No travel report will be submitted at the end of this trip.</div>
+                </div>
+                <!-- Toggle switch -->
+                <div class="relative shrink-0">
+                    <input type="checkbox" id="travelNoReportToggle" class="sr-only peer">
+                    <div class="w-11 h-6 bg-gray-600 rounded-full transition-colors travel-toggle-bg"></div>
+                    <div class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform peer-checked:translate-x-5"></div>
+                </div>
+            </label>
+        </div>
+        <div class="flex gap-3">
+            <button onclick="closeModal('travelSettings')" class="flex-1 py-4 bg-gray-800 text-gray-400 font-black rounded-2xl">Cancel</button>
+            <button onclick="saveTravelSettings()" class="flex-1 py-4 btn-accent font-black rounded-2xl shadow-lg">Save</button>
+        </div>
+    </div>
+</div>
+
+<!-- Location Management Modal (Phase 2, Feature 13) -->
+<div id="locationModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70" role="dialog" aria-modal="true">
+    <div class="bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm p-6 border border-gray-700 max-h-[90vh] overflow-y-auto">
+        <h2 class="text-xl font-black mb-6 text-white uppercase tracking-widest">Edit Location</h2>
+        <input type="hidden" id="locId">
+        <div class="space-y-4">
+            <div>
+                <label class="text-xs text-gray-400 uppercase font-black tracking-widest ml-1">Business Name</label>
+                <input type="text" id="locBusiness" class="form-input" placeholder="Optional">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400 uppercase font-black tracking-widest ml-1">Site Name</label>
+                <input type="text" id="locName" class="form-input" placeholder="Required">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400 uppercase font-black tracking-widest ml-1">Physical Address</label>
+                <div class="flex gap-2">
+                    <input type="text" id="locAddr" class="form-input mb-0 flex-1">
+                    <button onclick="getGpsAddress()" class="bg-blue-600 text-white p-3 rounded-xl font-black text-xs shrink-0">📍 GPS</button>
+                </div>
+            </div>
+            <div>
+                <label class="text-xs text-gray-400 uppercase font-black tracking-widest ml-1">Contact Name</label>
+                <input type="text" id="locContactName" class="form-input" placeholder="Optional">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400 uppercase font-black tracking-widest ml-1">Contact Phone</label>
+                <input type="tel" id="locContactPhone" class="form-input" placeholder="Optional">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400 uppercase font-black tracking-widest ml-1">Contact Email</label>
+                <input type="email" id="locContactEmail" class="form-input" placeholder="Optional">
+            </div>
+            <div class="bg-gray-900 p-3 rounded-xl">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" id="locCritical" class="w-5 h-5 rounded text-red-600">
+                    <span class="text-sm text-white font-bold">⚡ Critical Timing Mode (High-Risk Site)</span>
+                </label>
+            </div>
+            <!-- Report Required toggle -->
+            <div class="bg-gray-900 p-3 rounded-xl">
+                <label class="flex items-center justify-between cursor-pointer gap-3">
+                    <div>
+                        <div class="text-sm text-white font-bold">📄 Report Required</div>
+                        <div class="text-xs text-gray-300 font-bold mt-0.5">Default for this site. Can be overridden per visit.</div>
+                    </div>
+                    <div class="relative shrink-0">
+                        <input type="checkbox" id="locRequiresReport" class="sr-only peer" checked>
+                        <div class="w-10 h-5 bg-gray-600 peer-checked:bg-blue-600 rounded-full transition-colors"></div>
+                        <div class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform peer-checked:translate-x-5"></div>
+                    </div>
+                </label>
+            </div>
+            <!-- Custom Template Name -->
+            <div>
+                <label class="text-xs text-gray-400 uppercase font-black tracking-widest ml-1">Custom Template Name</label>
+                <input type="text" id="locTemplate" class="form-input" placeholder="Leave blank to use standard template">
+            </div>
+        </div>
+        <div class="mt-8 flex gap-3">
+            <button onclick="deleteLoc()" id="btnDelLoc" class="hidden bg-red-900/50 text-red-400 font-black py-3 px-6 rounded-xl text-sm border border-red-800/30">Delete</button>
+            <div class="flex-1"></div>
+            <button onclick="closeModal('location')" class="bg-gray-700 text-white font-black py-3 px-6 rounded-xl text-sm">Cancel</button>
+            <button onclick="saveLoc()" class="bg-blue-600 text-white font-black py-3 px-8 rounded-xl shadow-xl text-sm">Save</button>
+        </div>
+    </div>
+</div>
+
+<div id="noticeModal" class="hidden fixed inset-0 z-[400] flex items-center justify-center bg-black/90 backdrop-blur-sm p-4" role="dialog">
+    <div id="noticeCard" class="bg-gray-900 rounded-[2.5rem] shadow-2xl w-full max-w-sm p-8 text-center border-t-[12px] border-blue-600">
+        <div id="noticeIcon" class="text-6xl mb-6">📢</div>
+        <h2 id="noticeTitle" class="text-2xl font-black mb-3 uppercase tracking-tight leading-tight" style="color:var(--text-on-primary)"></h2>
+        <div id="noticeContent" class="text-gray-400 text-base mb-10 leading-relaxed text-left max-h-56 overflow-y-auto pr-3 scrollbar-hide"></div>
+        
+        <button id="btnAckNotice" onclick="acknowledgeNotice()" class="w-full py-6 bg-blue-600 text-white font-black rounded-2xl text-lg shadow-xl active:scale-95 transition-all">
+            I have read and understood
+        </button>
+    </div>
+</div>
+    
+<div id="pinModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70" role="dialog" aria-modal="true">
+    <div class="bg-gray-800 p-6 rounded-xl w-80">
+        <form id="pinEntryForm" onsubmit="return false;">
+    <input type="text" name="username" autocomplete="username" value="Worker" class="hidden" style="display:none !important;">
+    <h3 class="text-lg font-bold mb-4">Enter PIN</h3>
+    <input id="pinInput" type="password" autocomplete="current-password" class="form-input mb-4" inputmode="numeric" maxlength="6">
+    <button id="btnPinConfirm" type="button" class="w-full py-3 bg-blue-600 rounded-xl font-bold">Confirm</button>
+        </form>
+    </div>
+</div>
+
+<div id="groundedModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70" role="dialog" aria-modal="true">
+    <div class="bg-gray-800 p-6 rounded-xl w-80">
+        <h3 class="text-lg font-bold mb-4">Vehicle Grounded</h3>
+        <p class="text-gray-300 mb-4">WOF or Rego expired. Cannot proceed.</p>
+        <button onclick="closeModal('grounded')" class="w-full py-3 bg-red-600 rounded-xl font-bold">OK</button>
+    </div>
+</div>
+
+<div id="iosInstallModal" class="hidden fixed bottom-6 left-4 right-4 bg-gray-800 border-2 border-blue-500 rounded-2xl p-6 shadow-2xl z-[150]">
+    <div class="flex items-start gap-4">
+        <div class="text-4xl">📲</div>
+        <div class="flex-1">
+            <h3 class="text-lg font-extrabold text-white mb-1">Add to Home Screen</h3>
+            <p class="text-gray-300 text-sm mb-4 font-bold">Required for safety background tracking.</p>
+            <div class="bg-gray-900 rounded-lg p-4 text-sm text-blue-300 flex items-center gap-3 font-bold uppercase tracking-normal">
+                <span>1. Tap Share</span><span class="text-2xl">⎋</span><span>2. 'Add to Home Screen'</span><span class="text-2xl">⊕</span>
+            </div>
+        </div>
+        <button onclick="dismissInstall('ios')" class="text-gray-300 font-black p-3 text-xl" aria-label="Dismiss">✕</button>
+    </div>
+</div>
+
+<!-- Android Install Banner (Phase 3, Feature 17) -->
+<div id="installBanner" class="hidden fixed top-0 left-0 w-full bg-blue-600 text-white p-5 z-[150] shadow-xl flex items-center justify-between">
+    <div class="flex items-center gap-4">
+        <span class="text-3xl">📲</span>
+        <div>
+            <p class="font-bold text-base">Install Safety App</p>
+            <p class="text-sm opacity-90">Add to home screen for safety monitoring.</p>
+        </div>
+    </div>
+    <div class="flex gap-3">
+        <button onclick="dismissInstall('android')" class="px-5 py-2 text-sm font-bold bg-blue-700 rounded-lg">Later</button>
+        <button onclick="triggerInstall()" class="px-6 py-2 text-sm font-black bg-white text-blue-600 rounded-lg shadow-md">Install</button>
+    </div>
+</div>
+    
+<!-- Shake-to-Alert Confirmation Modal -->
+<div id="shakeConfirmModal" class="hidden fixed inset-0 z-[500] bg-red-900 flex items-center justify-center">
+    <div class="text-center text-white px-8">
+        <div class="text-8xl mb-4">🤫</div>
+        <h1 class="text-4xl font-black mb-2 tracking-tight">SHAKE DETECTED</h1>
+        <p class="text-yellow-300 text-xl font-black mb-2">Shake again to send covert alert</p>
+        <p class="text-red-200 text-sm font-bold mb-8">Stop shaking, then shake once more to confirm</p>
+        <div class="text-8xl font-mono font-black animate-pulse" id="shakeCountdown">5</div>
+        <p class="text-red-300 text-xs mt-4 font-bold uppercase tracking-widest">Covert duress alert — silent activation</p>
+    </div>
+</div>
+
+<!-- WELFARE CHECK MODAL
+     Shown at CONFIG.checkinInterval-minute intervals during active visits when
+     CONFIG.checkinEnabled === true. Worker has 2 minutes to tap confirm before
+     the safety alarm fires. z-[550] sits above all normal modals but below the
+     shake/volume confirmation overlays (z-[500] is theirs — note shake is 500
+     but this is 550 so it appears on top; shake is a 5-second self-dismissing
+     state that doesn't conflict). -->
+<div id="welfareCheckModal" class="hidden fixed inset-0 z-[550] flex flex-col items-center justify-center text-center px-8"
+     style="background: linear-gradient(135deg, #1e3a5f 0%, #0f172a 100%);">
+    <div class="text-7xl mb-5">🙋</div>
+    <h1 class="text-4xl font-black text-white mb-2 uppercase tracking-widest">Are You OK?</h1>
+    <p class="text-blue-300 text-base font-bold mb-1">Periodic welfare check-in</p>
+    <p class="text-gray-400 text-sm mb-8">Alarm fires if not confirmed within:</p>
+    <div class="text-8xl font-mono font-black text-white mb-10" id="welfareCountdown">2:00</div>
+    <button onclick="confirmWelfare()"
+            class="w-full max-w-xs py-8 bg-green-500 hover:bg-green-400 text-white font-black text-2xl rounded-3xl shadow-2xl active:scale-95 transition uppercase tracking-widest border-4 border-green-300">
+        ✅ I'm OK
+    </button>
+    <p class="text-gray-500 text-xs mt-6 max-w-xs leading-relaxed">
+        If you're unable to respond, ask someone nearby to tap the button for you.
+    </p>
+</div>
+
+<!-- Volume Panic Confirmation Modal -->
+<div id="volumeConfirmModal" class="hidden fixed inset-0 z-[500] bg-orange-900/90 flex items-center justify-center">
+    <div class="text-center text-white">
+        <div class="text-8xl mb-4">🔊</div>
+        <h1 class="text-4xl font-black mb-4">VOLUME PANIC</h1>
+        <p class="text-yellow-400 text-lg font-bold mb-6">Press volume buttons again to confirm</p>
+        <div class="text-6xl font-mono" id="volumeCountdown">3</div>
+        <p class="text-xs mt-4 text-gray-400">Emergency alert activation</p>
+    </div>
+</div>
+
+<div id="formsLibraryModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70" role="dialog" aria-modal="true">
+    <div class="bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm p-6 border border-gray-700 max-h-[80vh] flex flex-col">
+        <div class="flex justify-between items-center mb-6">
+            <h2 class="text-xl font-black text-white uppercase tracking-widest text-blue-400">Safety Forms</h2>
+            <button onclick="closeModal('formsLibrary')" class="text-2xl text-gray-400">×</button>
+        </div>
+        <div id="formsLibraryList" class="flex-1 overflow-y-auto space-y-3 pr-2"></div>
+        <button onclick="closeModal('formsLibrary')" class="mt-6 w-full py-4 bg-gray-700 rounded-xl font-black text-gray-400">Close</button>
+    </div>
+</div>
+
+<div id="resourceHubModal" class="hidden fixed inset-0 z-[350] flex items-center justify-center bg-black/90 backdrop-blur-md p-4" role="dialog">
+    <div class="bg-gray-900 rounded-[2.5rem] shadow-2xl w-full max-w-sm h-[80vh] flex flex-col border border-white/10">
+        <div class="p-8 pb-4">
+            <h2 class="text-2xl font-black text-white uppercase tracking-tight">Safety Hub</h2>
+            <div class="flex gap-4 mt-4 border-b border-white/10">
+                <button onclick="switchHubTab('res')" id="tabRes" class="pb-2 text-xs font-black uppercase tracking-widest text-blue-500 border-b-2 border-blue-500">Resources</button>
+                <button onclick="switchHubTab('not')" id="tabNot" class="pb-2 text-xs font-black uppercase tracking-widest text-gray-300">Notice Archive</button>
+            </div>
+        </div>
+        
+        <div id="hubContent" class="flex-1 overflow-y-auto p-8 pt-2 space-y-4 scrollbar-hide"></div>
+        
+        <div class="p-8 pt-0">
+            <button onclick="closeModal('resourceHub')" class="w-full py-4 bg-gray-800 text-gray-400 font-black rounded-2xl">Close</button>
+        </div>
+    </div>
+</div>
+
+</body>
+</html>
